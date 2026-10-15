@@ -1,0 +1,114 @@
+{
+  "errors": [],
+  "publisher": [
+    {
+      "connection": "connected",
+      "ice": "connected",
+      "signaling": "stable"
+    },
+    {
+      "type": "candidate-pair",
+      "state": "succeeded",
+      "nominated": true,
+      "rtt": 0,
+      "availableBitrate": 301000,
+      "bytesSent": 404944,
+      "bytesReceived": 139778
+    },
+    {
+      "type": "inbound-rtp",
+      "kind": "audio",
+      "codec": "audio/opus",
+      "bytes": 128718
+    },
+    {
+      "type": "outbound-rtp",
+      "kind": "audio",
+      "codec": "audio/opus",
+      "bytes": 173645
+    },
+    {
+      "type": "outbound-rtp",
+      "kind": "audio",
+      "codec": "audio/opus",
+      "bytes": 153198
+    },
+    {
+      "type": "outbound-rtp",
+      "kind": "video",
+      "codec": "video/H264",
+      "bytes": 42908,
+      "framesEncoded": 193,
+      "width": 1920,
+      "height": 1080,
+      "fps": 31,
+      "encoder": "OpenH264",
+      "powerEfficient": false,
+      "encodeMs": 4.4404145077720205,
+      "limited": "none"
+    },
+    {
+      "type": "transport",
+      "dtls": "connected",
+      "selected": "CP4GUSaUB4_a7jLRf9N",
+      "bytesSent": 404944,
+      "bytesReceived": 139778
+    }
+  ],
+  "receiver": [
+    {
+      "connection": "connected",
+      "ice": "connected",
+      "signaling": "stable"
+    },
+    {
+      "type": "candidate-pair",
+      "state": "succeeded",
+      "nominated": true,
+      "rtt": 0,
+      "availableBitrate": 483398,
+      "bytesSent": 143117,
+      "bytesReceived": 360570
+    },
+    {
+      "type": "inbound-rtp",
+      "kind": "audio",
+      "codec": "audio/opus",
+      "bytes": 168831
+    },
+    {
+      "type": "inbound-rtp",
+      "kind": "audio",
+      "codec": "audio/opus",
+      "bytes": 135044
+    },
+    {
+      "type": "inbound-rtp",
+      "kind": "video",
+      "codec": "video/H264",
+      "bytes": 32083,
+      "framesDecoded": 190,
+      "framesDropped": 0,
+      "width": 1920,
+      "height": 1080,
+      "fps": 31
+    },
+    {
+      "type": "outbound-rtp",
+      "kind": "audio",
+      "codec": "audio/opus",
+      "bytes": 128268
+    },
+    {
+      "type": "transport",
+      "dtls": "connected",
+      "selected": "CPrf+Cfc4q_m/nyzyLU",
+      "bytesSent": 143117,
+      "bytesReceived": 360570
+    }
+  ],
+  "voicePanel": "General / Demo Server · 0 мс",
+  "contrast": 255,
+  "screenStopped": true,
+  "cameraMuteDeafenWatchMiniPlayerRejoin": true
+}

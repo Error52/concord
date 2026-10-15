@@ -1,0 +1,34 @@
+✔ concurrent expired requests share one refresh and retry with the new token (48.7491ms)
+✔ temporary refresh failures preserve the token and do not trigger logout (13.7866ms)
+✔ refresh retries a tab race; an actually expired session clears the token (134.4925ms)
+✔ development server rejects malformed/traversing URLs and missing chunks without crashing (196.3113ms)
+✔ proxy preserves distinct LAN addresses behind a trusted local proxy and strips direct spoofing (222.6518ms)
+✔ voice gets a higher fidelity mono budget and loss protection; shared audio stays raw stereo (1.1279ms)
+✔ receiver buffer leaves headroom for jitter without accumulating seconds of delay (0.297ms)
+✔ buffer preference is optional and rejected/unsupported setters never break a call (0.3282ms)
+✔ auto respects small CPUs and keeps the high quality ceiling on capable machines (1.2203ms)
+✔ CPU pressure lowers frame rate before resolution, text retains sharpness (0.4066ms)
+✔ stream controller resists brief pressure, backs off and recovers gradually (0.4478ms)
+✔ stream controller uses encoder time, ignores audio, tolerates missing stats and bounds its tier (0.3901ms)
+✔ bandwidth startup does not masquerade as CPU overload or erase screen detail (0.3417ms)
+✔ screen codec falls back on browsers without H.264 (1.064ms)
+✔ stats: RTT, transport and codec come from the selected candidate pair and codec stats (2.3198ms)
+✔ stats: bitrates and packet loss are computed from deltas between samples (107.5788ms)
+✔ stats: playout buffers use interval deltas, tolerate counter reset and missing fields (0.5177ms)
+✔ stats: relay candidates are labelled as TURN; quality thresholds (0.2934ms)
+✔ VAD: opens on speech, holds through short gaps, closes after hangover (0.2826ms)
+✔ VAD: auto threshold follows the noise floor (0.1833ms)
+✔ audio level helpers (0.1438ms)
+✔ message ids compare as big integers (0.2275ms)
+✔ contrast validation mirrors the backend rule (0.3885ms)
+✔ router parses and builds paths (0.9411ms)
+✔ formatting helpers (0.5768ms)
+✔ permission helper treats ADMINISTRATOR as all permissions (0.1421ms)
+ℹ tests 26
+ℹ suites 0
+ℹ pass 26
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 781.5932

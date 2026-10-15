@@ -1,0 +1,53 @@
+✔ registration validates input and rejects duplicates (552.7713ms)
+✔ registration races keep field-specific duplicate errors (91.1743ms)
+{"t":"2026-10-12T21:26:57.370Z","level":"warn","msg":"email delivery postponed","mailId":"0163267e-307a-4d41-a886-06b6fb6e26a1","attempt":1,"error":"SMTP is not configured"}
+✔ failed SMTP remains queued with bounded backoff rather than pretending delivery (4.6787ms)
+✔ email verification gates new users, resends with cooldown and safely consumes links (423.4686ms)
+✔ login: wrong password, success, CSRF header required for cookie endpoints (384.8599ms)
+{"t":"2026-10-12T21:26:58.323Z","level":"warn","msg":"refresh token reuse detected; revoking family","userId":"c59559c7-4525-44f1-a82d-d000550b0dca"}
+✔ refresh tokens rotate and reuse revokes the whole session family (329.3096ms)
+✔ concurrent tabs receive the same rotated cookie; logout revokes retired access tokens too (173.3706ms)
+✔ logout revokes the access token immediately (186.6168ms)
+✔ two-factor authentication: setup, login challenge, replay protection (452.6106ms)
+✔ password reset: token is single-use and logs out other sessions (339.2109ms)
+✔ concurrent password resets consume a link once and revoke pre-rotation tokens (205.0571ms)
+✔ changing password revokes every token on other devices and keeps the current family (342.94ms)
+✔ server creation gives default roles and channels; non-members get 404 (376.2997ms)
+✔ permissions: members cannot manage channels; owners can; changes broadcast (348.485ms)
+✔ invites: max uses and expiry are enforced; banned users cannot rejoin (590.7445ms)
+✔ role hierarchy: a moderator cannot kick an admin or grant permissions they lack (457.3185ms)
+✔ badges: only MANAGE_BADGES can create/grant; badges appear on profiles (297.9832ms)
+✔ admin panel: only platform admins manage special badges; they show on profiles everywhere (515.0144ms)
+✔ messages: realtime delivery, edit/delete permissions, reactions, replies, mentions (412.9831ms)
+✔ messages: XSS payloads are stored as text, non-members cannot read or post (377.9371ms)
+✔ slowmode is enforced for regular members (286.1584ms)
+✔ pins, bookmarks, unread markers and full-text search with filters (547.0955ms)
+✔ friends: request, accept, presence; blocking stops DMs (431.4969ms)
+✔ uploads: content sniffing, size limit, access control by channel membership (454.6794ms)
+✔ avatar upload is re-encoded and served as webp; bad profile colors are rejected (156.0627ms)
+{"t":"2026-10-12T21:27:08.601Z","level":"warn","msg":"livekit moderation failed","err":{"name":"TypeError","message":"fetch failed","stack":"TypeError: fetch failed"}}
+✔ voice: tokens carry real grants; timeouts and server mute are enforced server-side (5904.491ms)
+✔ gateway: accepts a heartbeat sent immediately after authentication (104.5075ms)
+✔ gateway: rejects bad tokens, relays typing and DM call signalling (242.846ms)
+✔ rate limiting returns 429 with Retry-After (727.1662ms)
+✔ SMTP accepts immediate and split multiline replies and encodes Cyrillic body (37.3956ms)
+✔ SMTP closed or rejected connection fails promptly instead of hanging or crashing (3.4327ms)
+✔ API test isolation checks the database name, not a password or hostname containing test (1.2854ms)
+✔ maintenance skips unavailable Redis without an unhandled rejection (0.7131ms)
+✔ jwt: roundtrip, tamper and expiry (0.8204ms)
+✔ password: scrypt hash verifies only the right password (196.6983ms)
+✔ totp: RFC 6238 test vector and drift window (1.5801ms)
+✔ color: contrast validation rejects unreadable gradients (0.309ms)
+✔ upload sniffing: magic bytes beat the file name (1.1675ms)
+✔ search: tsquery builder strips operators (0.9152ms)
+✔ permissions: administrator implies all, names roundtrip (0.2546ms)
+✔ s3: SigV4 matches the AWS documented example (1.3758ms)
+✔ livekit: webhook signature is verified against the body hash (0.4225ms)
+ℹ tests 42
+ℹ suites 0
+ℹ pass 42
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 17033.0325

@@ -1,0 +1,29 @@
+✔ voice gets a higher fidelity mono budget and loss protection; shared audio stays raw stereo (0.734ms)
+✔ receiver buffer leaves headroom for jitter without accumulating seconds of delay (0.1832ms)
+✔ buffer preference is optional and rejected/unsupported setters never break a call (0.2451ms)
+✔ auto respects small CPUs and keeps the high quality ceiling on capable machines (0.7344ms)
+✔ CPU pressure lowers frame rate before resolution, text retains sharpness (0.227ms)
+✔ stream controller resists brief pressure, backs off and recovers gradually (0.2907ms)
+✔ stream controller uses encoder time, ignores audio, tolerates missing stats and bounds its tier (0.2509ms)
+✔ bandwidth startup does not masquerade as CPU overload or erase screen detail (0.8212ms)
+✔ screen codec falls back on browsers without H.264 (0.2013ms)
+✔ stats: RTT, transport and codec come from the selected candidate pair and codec stats (1.818ms)
+✔ stats: bitrates and packet loss are computed from deltas between samples (102.0468ms)
+✔ stats: playout buffers use interval deltas, tolerate counter reset and missing fields (0.5763ms)
+✔ stats: relay candidates are labelled as TURN; quality thresholds (0.2519ms)
+✔ VAD: opens on speech, holds through short gaps, closes after hangover (0.2095ms)
+✔ VAD: auto threshold follows the noise floor (0.1661ms)
+✔ audio level helpers (0.1045ms)
+✔ message ids compare as big integers (0.1516ms)
+✔ contrast validation mirrors the backend rule (0.284ms)
+✔ router parses and builds paths (0.7814ms)
+✔ formatting helpers (0.4159ms)
+✔ permission helper treats ADMINISTRATOR as all permissions (0.0893ms)
+ℹ tests 21
+ℹ suites 0
+ℹ pass 21
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 323.1768

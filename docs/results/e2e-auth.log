@@ -1,0 +1,17 @@
+✔  guest is redirected to login; registration validates passwords  1282
+✔  two users register  5807
+✔  wrong password shows an error  838
+✔  A creates a server and lands in #general  368
+✔  A creates an invite; B joins through /invite/:code  1292
+✔  realtime chat: markdown, mention, delivery to the other user  139
+✔  typing indicator + reactions sync  3669
+✔  edit and delete own message  409
+✔  profile popover opens with banner/badges/roles and quick message  145
+✔  friend request → accept → DM with unread badge  412
+✔  notification inbox lists the DM; bookmarks open  87
+✔  server-side search finds messages with filters  422
+✔  voice settings: device list + real mic level from the (fake) microphone  773
+✔  profile editor rejects unreadable theme colours  388
+✔  voice channel join  587
+✔  seed data: Demo Server, roles and badges on the profile card  1204
+✔  mobile layout: drawer navigation  2060

@@ -1,0 +1,28 @@
+{
+  "errors": [],
+  "guestScripts": [
+    {
+      "path": "/assets/main-NGKPZXSS.js",
+      "bytes": 235501
+    },
+    {
+      "path": "/assets/chunks/chunk-USJQCAY6.js",
+      "bytes": 18941
+    },
+    {
+      "path": "/assets/chunks/chunk-CRBLPHGE.js",
+      "bytes": 40293
+    }
+  ],
+  "guestJsBytes": 294735,
+  "initialEmail": true,
+  "cooldown": true,
+  "pendingSurvivesReload": true,
+  "resend": true,
+  "supersededLinkRejected": true,
+  "confirmed": true,
+  "resetLinkWorksWhileSignedIn": true,
+  "resetSignedOut": true,
+  "newPasswordWorks": true,
+  "chunkRetryKeepsSession": true
+}

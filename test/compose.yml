@@ -1,0 +1,38 @@
+name: concord-tests
+services:
+  postgres:
+    image: postgres:16-bookworm
+    environment:
+      POSTGRES_USER: concord
+      POSTGRES_PASSWORD: test-only-password
+      POSTGRES_DB: concord_test
+      POSTGRES_INITDB_ARGS: --encoding=UTF8 --locale=C.UTF-8
+    healthcheck:
+      test: [CMD-SHELL, pg_isready -U concord -d concord_test]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+  redis:
+    image: redis:7-alpine
+    healthcheck:
+      test: [CMD, redis-cli, ping]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+  api:
+    build:
+      context: ../backend
+      target: test
+    environment:
+      NODE_ENV: test
+      DATABASE_URL: postgres://concord:test-only-password@postgres:5432/concord_test
+      REDIS_URL: redis://redis:6379/1
+      JWT_SECRET: test-only-jwt-secret-0123456789abcdef0123456789
+      LIVEKIT_API_SECRET: test-only-livekit-secret-0123456789abcdef
+      GIF_PROVIDER: none
+      STORAGE_DRIVER: local
+      STORAGE_LOCAL_DIR: /tmp/concord-test-uploads
+      TRUST_PROXY: '1'
+    depends_on:
+      postgres: {condition: service_healthy}
+      redis: {condition: service_healthy}

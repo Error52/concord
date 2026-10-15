@@ -1,0 +1,91 @@
+{
+  "date": "2026-10-12",
+  "environment": {
+    "node": "v24.19.0",
+    "pnpm": "11.25.0",
+    "chrome": "155.0.8059.39",
+    "logicalCores": 12,
+    "postgres": "16.15",
+    "redis": "5.0.14.1",
+    "livekit": "1.13.9",
+    "livekitClient": "2.22.3",
+    "react": "19.3.0"
+  },
+  "checks": {
+    "backend": 34,
+    "frontend": 21,
+    "e2e": 17,
+    "responsive": 113,
+    "layouts": 16,
+    "screen": true,
+    "webrtc": true,
+    "typechecks": true,
+    "builds": true,
+    "dockerBuild": false
+  },
+  "build": {
+    "js": "main-WMOMG4XW.js",
+    "css": "main-TZFOKFC5.css"
+  },
+  "profiles": [
+    {
+      "profile": "auto",
+      "resolution": "1920×1080",
+      "receiverFps": 51,
+      "presentedFps": 42.2,
+      "firstFrameMs": 657,
+      "medianMs": 21.8,
+      "p95Ms": 32.8,
+      "dropped": 0
+    },
+    {
+      "profile": "1080p60",
+      "resolution": "1920×1080",
+      "receiverFps": 55,
+      "presentedFps": 49.7,
+      "firstFrameMs": 696,
+      "medianMs": 29.9,
+      "p95Ms": 40.4,
+      "dropped": 0
+    },
+    {
+      "profile": "1080p30",
+      "resolution": "1920×1080",
+      "receiverFps": 30,
+      "presentedFps": 29.8,
+      "firstFrameMs": 625,
+      "medianMs": 35.6,
+      "p95Ms": 46,
+      "dropped": 0
+    },
+    {
+      "profile": "720p30",
+      "resolution": "1280×720",
+      "receiverFps": 30,
+      "presentedFps": 29.9,
+      "firstFrameMs": 419,
+      "medianMs": 45,
+      "p95Ms": 50.5,
+      "dropped": 0
+    },
+    {
+      "profile": "text",
+      "resolution": "1920×1080",
+      "receiverFps": 15,
+      "presentedFps": 15.1,
+      "firstFrameMs": 639,
+      "medianMs": 30.8,
+      "p95Ms": 43.9,
+      "dropped": 0
+    }
+  ],
+  "main": {
+    "firstFrameMs": 654,
+    "resolution": "1920×1080",
+    "receiverFps": 54,
+    "presentedFps": 49.1,
+    "medianMs": 27.2,
+    "p95Ms": 40.3,
+    "dropped": 0
+  }
+}

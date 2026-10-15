@@ -1,0 +1,132 @@
+/* Layout constraints only: existing colours, typography and component styling stay intact. */
+.app {
+  grid-template-rows: minmax(0, 1fr);
+  min-height: 0;
+  overflow: hidden;
+}
+.main,
+.main-col,
+.chat,
+.stage,
+.sidebar-list,
+.scroll,
+.scroll-hidden,
+.picker-body,
+.modal-body {
+  min-height: 0;
+}
+.chat,
+.stage,
+.settings-content,
+.settings-nav,
+.settings-grid > *,
+.profile-editor > * {
+  min-width: 0;
+}
+.scroll,
+.scroll-hidden,
+.messages {
+  overscroll-behavior: contain;
+}
+.rail {
+  overflow-y: auto;
+  scrollbar-width: none;
+}
+.rail::-webkit-scrollbar { display: none; }
+.main-head > .icon-btn,
+.modal-head,
+.modal-foot,
+.stage-head,
+.stage-controls { flex-shrink: 0; }
+.main-head .segmented { min-width: 0; }
+.main-head-title { overflow: hidden; }
+.messages-intro h2,
+.msg-author,
+.member-name,
+.field-hint { overflow-wrap: anywhere; }
+.msg-head { flex-wrap: wrap; }
+.composer textarea { min-width: 0; }
+.modal-body { overflow-y: auto; }
+.modal-foot { flex-wrap: wrap; }
+.picker { max-height: min(420px, calc(100dvh - 160px)); }
+.menu {
+  min-width: min(200px, calc(100vw - 16px));
+  max-width: min(280px, calc(100vw - 16px));
+  max-height: calc(100dvh - 16px);
+  overflow-y: auto;
+}
+.profile-popover {
+  max-width: calc(100vw - 16px);
+  max-height: calc(100dvh - 16px);
+  overflow-y: auto;
+}
+.profile-popover .pcard,
+.profile-editor .pcard { max-width: 100%; }
+.settings { grid-template-rows: minmax(0, 1fr); }
+.settings-nav { min-height: 0; overflow-y: auto; }
+.settings-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.settings .input,
+.settings .select,
+.auth-card .input,
+.auth-card .select { min-width: 0; max-width: 100%; }
+.auth-shell {
+  height: 100dvh;
+  min-height: 0;
+  align-items: safe center;
+}
+.auth-card.wide { grid-template-columns: minmax(0, 1fr) 300px; }
+.form-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.stage-body,
+.stage-focus,
+.stage-grid { min-width: 0; }
+.stage-body { overflow: hidden; }
+.stage-join { min-height: 0; overflow-y: auto; }
+.stage-head { min-width: 0; flex-wrap: wrap; }
+.stage-head strong { overflow-wrap: anywhere; }
+.thread-panel { overflow: hidden; }
+.mini-player-bar { touch-action: none; }
+.stage-join-nav { display: none; }
+
+@media (max-width: 1100px) {
+  .settings .profile-editor { grid-template-columns: minmax(0, 1fr); }
+}
+@media (max-width: 900px) {
+  .settings { grid-template-rows: auto minmax(0, 1fr); }
+  .settings-nav { padding-right: 56px; }
+  .settings-nav nav { flex-shrink: 0; }
+  .settings-close { z-index: 1; }
+  .settings-grid,
+  .profile-editor,
+  .ss-roles { grid-template-columns: minmax(0, 1fr); }
+  .settings .row,
+  .save-bar,
+  .badge-editor { flex-wrap: wrap; }
+  .settings .segmented { flex-wrap: wrap; }
+  .settings .table { display: block; max-width: 100%; overflow-x: auto; }
+}
+@media (max-width: 820px) {
+  .auth-card.wide { grid-template-columns: minmax(0, 1fr); }
+}
+@media (max-width: 760px) {
+  .stage-join-nav { display: inline-grid; position: absolute; top: 10px; left: 12px; z-index: 1; }
+  .modal .segmented,
+  .modal .row { flex-wrap: wrap; }
+  .modal .input,
+  .modal .select { min-width: 0; max-width: 100%; }
+  .composer-wrap { padding-bottom: max(10px, env(safe-area-inset-bottom)); }
+  .upanel { margin-bottom: max(8px, env(safe-area-inset-bottom)); }
+  .stage-controls { padding-bottom: max(16px, env(safe-area-inset-bottom)); }
+  .stage-grid.n5,
+  .stage-grid.n6 { --cols: 2; }
+  .stage-grid.many { grid-template-columns: repeat(auto-fill, minmax(min(180px, 100%), 1fr)); }
+  .stage-strip { height: 90px; }
+  .stage-strip .tile { width: 160px; }
+  .tile-tools { opacity: 1; flex-wrap: wrap; max-width: calc(100% - 16px); }
+  .mini-player-bar { opacity: 1; }
+}
+@media (max-width: 480px) {
+  .form-grid { grid-template-columns: minmax(0, 1fr); }
+  .keybind-row,
+  .session-row { flex-wrap: wrap; }
+  .theme-chips { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}

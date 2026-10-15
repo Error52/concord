@@ -1,0 +1,61 @@
+import {chromium} from 'playwright';
+import {mkdir,writeFile} from 'node:fs/promises';
+import assert from 'node:assert/strict';
+import {mailLink} from './mailbox.mjs';
+const BASE=process.env.BASE_URL??'http://localhost:5180',OUT=process.env.AUTH_DIR??'test/results/auth';
+await mkdir(OUT,{recursive:true});
+const browser=await chromium.launch({executablePath:process.env.CHROMIUM_PATH||undefined});
+const result={errors:[]},context=await browser.newContext({viewport:{width:1440,height:900}}),page=await context.newPage();
+const name=`signup${Date.now().toString(36)}`,email=`${name}@e2e.test`;
+page.on('pageerror',e=>result.errors.push(e.message.replace(/token=[^\s&]+/g,'token=[redacted]')));
+await context.addInitScript(()=>{
+  const create=URL.createObjectURL.bind(URL),revoke=URL.revokeObjectURL.bind(URL);window.__previewUrls=new Set();
+  URL.createObjectURL=b=>{const url=create(b);window.__previewUrls.add(url);return url;};
+  URL.revokeObjectURL=url=>{window.__previewUrls.delete(url);revoke(url);};
+});
+try{
+ await page.goto(`${BASE}/register`);await page.getByRole('heading',{name:'Создать аккаунт'}).waitFor();
+ result.guestScripts=await page.evaluate(()=>performance.getEntriesByType('resource').filter(r=>r.initiatorType==='script').map(r=>({path:new URL(r.name).pathname,bytes:r.encodedBodySize})));
+ result.guestJsBytes=result.guestScripts.reduce((s,r)=>s+r.bytes,0);
+ assert.ok(!result.guestScripts.some(r=>r.path.includes('AppShell')),'chat shell is not loaded before signup');
+ assert.ok(result.guestJsBytes<400000,'guest JS payload is below 400 kB');
+ await page.getByLabel('Имя пользователя').fill(name);await page.getByLabel('Email').fill(email);
+ await page.getByLabel('Пароль',{exact:true}).fill('password123');await page.getByLabel('Повторите пароль').fill('password123');
+ const registration=page.waitForResponse(r=>r.url().endsWith('/api/auth/register')&&r.request().method()==='POST');
+ await page.getByRole('button',{name:'Продолжить',exact:true}).click();const response=await registration;assert.equal(response.status(),201);
+ await page.getByRole('heading',{name:'Подтвердите почту',exact:true}).waitFor();
+ await page.waitForFunction(()=>window.__previewUrls.size===0);
+ const firstLink=await mailLink(email,'подтвердите почту','/verify-email');result.initialEmail=true;
+ await page.getByRole('button',{name:'Отправить письмо повторно',exact:true}).click();
+ await page.getByText(/Повторить отправку можно через/).waitFor();result.cooldown=true;
+ await page.setViewportSize({width:320,height:568});await page.screenshot({path:`${OUT}/pending-mobile.png`});
+ assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth));
+ await page.setViewportSize({width:1440,height:900});await page.reload();
+ await page.getByRole('heading',{name:'Подтвердите почту',exact:true}).waitFor();result.pendingSurvivesReload=true;
+ // No bypass of the real server cooldown; wait through it while other checks can run independently.
+ await page.waitForTimeout(60000);
+ const sentAt=Date.now();await page.getByRole('button',{name:'Отправить письмо повторно',exact:true}).click();
+ const secondLink=await mailLink(email,'подтвердите почту','/verify-email',{after:sentAt-1000});assert.notEqual(secondLink,firstLink);result.resend=true;
+ await page.goto(firstLink);await page.getByRole('button',{name:'Подтвердить почту',exact:true}).click();
+ await page.getByText(/Ссылка недействительна или устарела/).waitFor();result.supersededLinkRejected=true;
+ await page.goto(secondLink);await page.getByRole('button',{name:'Подтвердить почту',exact:true}).click();
+ await page.getByText('Друзья',{exact:true}).first().waitFor();result.confirmed=true;
+ await page.screenshot({path:`${OUT}/confirmed.png`});
+ const guest=await browser.newContext(),forgot=await guest.newPage();await forgot.goto(`${BASE}/forgot`);
+ const resetRequested=Date.now();await forgot.getByLabel('Email').fill(email);await forgot.getByRole('button',{name:'Отправить ссылку'}).click();
+ await forgot.getByText(/Если такой аккаунт существует/).waitFor();
+ const resetLink=await mailLink(email,'восстановление пароля','/reset-password',{after:resetRequested-1000});await guest.close();
+ await page.goto(resetLink);await page.getByRole('heading',{name:'Новый пароль',exact:true}).waitFor();result.resetLinkWorksWhileSignedIn=true;
+ await page.getByLabel('Новый пароль',{exact:true}).fill('nextpassword123');await page.getByLabel('Повторите пароль').fill('nextpassword123');
+ await page.getByRole('button',{name:'Сохранить',exact:true}).click();await page.getByRole('heading',{name:'С возвращением!'}).waitFor();result.resetSignedOut=true;
+ await page.getByLabel('Email').fill(email);await page.getByLabel('Пароль',{exact:true}).fill('nextpassword123');await page.getByRole('button',{name:'Войти',exact:true}).click();
+ await page.getByText('Друзья',{exact:true}).first().waitFor();result.newPasswordWorks=true;
+ const cold=await browser.newContext(),retry=await cold.newPage();let blocked=false;
+ await retry.route('**/AppShell-*.js',r=>{if(!blocked){blocked=true;return r.abort();}return r.continue();});
+ await retry.goto(`${BASE}/login`);await retry.getByLabel('Email').fill('alice@concord.local');await retry.getByLabel('Пароль',{exact:true}).fill('demo12345');await retry.getByRole('button',{name:'Войти',exact:true}).click();
+ await retry.getByRole('heading',{name:'Не удалось загрузить приложение'}).waitFor();
+ await retry.getByRole('button',{name:'Повторить загрузку'}).click();await retry.getByText('Друзья',{exact:true}).first().waitFor();result.chunkRetryKeepsSession=true;await cold.close();
+ assert.equal(result.errors.length,0);
+ console.log(JSON.stringify(result,null,2));
+}catch(err){result.failure=err.message.split('\n')[0].replace(/token=[^\s&]+/g,'token=[redacted]');await page.screenshot({path:`${OUT}/failure.png`});throw err;}
+finally{await writeFile(`${OUT}/results.json`,JSON.stringify(result,null,2));await browser.close();}

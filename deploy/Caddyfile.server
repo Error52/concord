@@ -1,0 +1,14 @@
+# Public deployment: Caddy obtains and renews a Let's Encrypt certificate for {$DOMAIN} automatically.
+# DNS: an A record for the domain must point to this server, and ports 80 + 443 must be open.
+{
+	email {$ACME_EMAIL}
+}
+
+{$DOMAIN} {
+	encode zstd gzip
+	header Strict-Transport-Security "max-age=31536000"
+	reverse_proxy frontend:80 {
+		# WebSockets (/api/gateway, /livekit) are proxied transparently.
+		flush_interval -1
+	}
+}

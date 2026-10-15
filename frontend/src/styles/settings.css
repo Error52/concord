@@ -1,0 +1,330 @@
+.settings {
+  position: fixed;
+  inset: 0;
+  z-index: 80;
+  display: grid;
+  grid-template-columns: minmax(200px, 1fr) minmax(0, 900px) minmax(64px, 1fr);
+  background: var(--bg-2);
+  animation: fade-in 160ms var(--ease);
+}
+.settings-nav {
+  background: var(--bg-1);
+  display: flex;
+  justify-content: flex-end;
+  padding: 48px 8px 24px 16px;
+}
+.settings-nav nav {
+  width: 220px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.settings-nav h4 {
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-3);
+  padding: 12px 10px 6px;
+}
+.settings-nav button {
+  text-align: left;
+  padding: 7px 10px;
+  border-radius: var(--radius-sm);
+  color: var(--text-2);
+  font-weight: 500;
+}
+.settings-nav button:hover {
+  background: var(--bg-4);
+  color: var(--text-1);
+}
+.settings-nav button[aria-current='page'] {
+  background: var(--bg-5);
+  color: var(--text-0);
+}
+.settings-content {
+  padding: 48px 40px 80px;
+}
+.settings-content h2 {
+  font-size: 1.375rem;
+  margin-bottom: 20px;
+}
+.settings-content h3 {
+  font-size: 0.8125rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-2);
+  margin: 28px 0 10px;
+  font-family: var(--font-ui);
+}
+.settings-close {
+  padding-top: 48px;
+}
+.settings-close button {
+  width: 38px;
+  height: 38px;
+  border-radius: 50%;
+  border: 2px solid var(--text-3);
+  color: var(--text-2);
+  display: grid;
+  place-items: center;
+}
+.settings-close button:hover {
+  border-color: var(--text-0);
+  color: var(--text-0);
+}
+.settings-close span {
+  display: block;
+  font-size: 0.75rem;
+  font-weight: 700;
+  color: var(--text-3);
+  margin-top: 6px;
+  text-align: center;
+  width: 38px;
+}
+.card {
+  background: var(--bg-1);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 16px;
+}
+.settings-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+}
+.profile-editor {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 340px;
+  gap: 28px;
+}
+.color-input {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.color-input input[type='color'] {
+  width: 44px;
+  height: 36px;
+  border: 0;
+  background: none;
+  padding: 0;
+  cursor: pointer;
+}
+.save-bar {
+  position: sticky;
+  bottom: 20px;
+  margin-top: 24px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px 10px 16px;
+  border-radius: var(--radius);
+  background: var(--bg-0);
+  box-shadow: var(--shadow);
+  animation: slide-up 200ms var(--ease);
+}
+.keybind-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 0;
+  border-bottom: 1px solid var(--border);
+}
+.keybind-row .kbd {
+  min-width: 120px;
+  justify-content: center;
+  cursor: pointer;
+  height: 34px;
+}
+.keybind-row .kbd.recording {
+  border-color: var(--red);
+  color: var(--red);
+}
+.camera-preview {
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  border-radius: var(--radius);
+  background: #000;
+  object-fit: cover;
+  transform: scaleX(-1);
+}
+.session-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--border);
+}
+
+/* server settings */
+.ss-roles {
+  display: grid;
+  grid-template-columns: 220px minmax(0, 1fr);
+  gap: 20px;
+}
+.ss-role-list button {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 8px 10px;
+  border-radius: var(--radius-sm);
+  text-align: left;
+}
+.ss-role-list button[aria-current='true'],
+.ss-role-list button:hover {
+  background: var(--bg-4);
+}
+.perm-row {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--border);
+}
+.table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.875rem;
+}
+.table th {
+  text-align: left;
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  color: var(--text-3);
+  padding: 8px;
+  border-bottom: 1px solid var(--border);
+}
+.table td {
+  padding: 8px;
+  border-bottom: 1px solid var(--border);
+  vertical-align: middle;
+}
+.badge-editor {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px;
+  border-radius: var(--radius);
+  background: var(--bg-1);
+  border: 1px solid var(--border);
+  margin-bottom: 8px;
+}
+.badge-preview {
+  width: 40px;
+  height: 40px;
+  border-radius: 10px;
+  display: grid;
+  place-items: center;
+  font-size: 1.25rem;
+  flex-shrink: 0;
+}
+.badge-preview img {
+  width: 28px;
+  height: 28px;
+}
+
+@media (max-width: 900px) {
+  .settings {
+    grid-template-columns: 1fr;
+    grid-template-rows: auto 1fr;
+  }
+  .settings-nav {
+    padding: 12px;
+    justify-content: flex-start;
+    overflow-x: auto;
+  }
+  .settings-nav nav {
+    flex-direction: row;
+    width: auto;
+  }
+  .settings-nav h4 {
+    display: none;
+  }
+  .settings-nav button {
+    white-space: nowrap;
+  }
+  .settings-content {
+    padding: 20px 16px 80px;
+  }
+  .settings-close {
+    position: fixed;
+    top: 8px;
+    right: 8px;
+    padding: 0;
+  }
+  .settings-close span {
+    display: none;
+  }
+  .profile-editor,
+  .settings-grid,
+  .ss-roles {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* ───── platform admin panel ───── */
+.admin-stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+  gap: 10px;
+  margin: 12px 0 16px;
+}
+.admin-stats .card {
+  padding: 12px 14px;
+}
+.admin-stat-value {
+  font-size: 1.5rem;
+  font-weight: 700;
+  color: var(--text-0);
+}
+.admin-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+.admin-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 0.6875rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--accent) 22%, transparent);
+  color: var(--text-0);
+  vertical-align: 2px;
+}
+.admin-badge-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 10px 3px 3px;
+  border-radius: 999px;
+  border: 1px dashed var(--border);
+  background: transparent;
+  color: var(--text-2);
+  font: inherit;
+  font-size: 0.8125rem;
+  cursor: pointer;
+  opacity: 0.7;
+}
+.admin-badge-chip .badge-preview {
+  border-radius: 999px;
+  font-size: 0.8125rem;
+}
+.admin-badge-chip .badge-preview img {
+  width: 16px;
+  height: 16px;
+}
+.admin-badge-chip:hover {
+  opacity: 1;
+}
+.admin-badge-chip.on {
+  border-style: solid;
+  border-color: var(--accent);
+  color: var(--text-0);
+  opacity: 1;
+}

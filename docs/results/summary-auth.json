@@ -1,0 +1,28 @@
+{
+  "date": "2026-10-13",
+  "checks": {
+    "backend": 42,
+    "frontend": 25,
+    "e2e": 17,
+    "responsive": 116,
+    "layouts": 16,
+    "auth": true,
+    "media": true,
+    "docker": false,
+    "externalSmtpTls": false
+  },
+  "guestJsBytes": 294735,
+  "mediaMain": {
+    "resolution": "1920×1080",
+    "receiverFps": 50,
+    "presentedFps": 47.1,
+    "firstFrameMs": 636,
+    "medianMs": 27.4,
+    "p95Ms": 41.1,
+    "dropped": 0
+  },
+  "build": {
+    "js": "main-NGKPZXSS.js",
+    "css": "main-TZFOKFC5.css"
+  }
+}

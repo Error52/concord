@@ -1,0 +1,6 @@
+{
+  "config": true,
+  "existingSecretsPreserved": true,
+  "rejectsNonPrivateIPv4": true,
+  "dockerStarted": false
+}

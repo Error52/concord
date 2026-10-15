@@ -1,0 +1,217 @@
+# Concord — full stack. Start with:  cp .env.example .env && docker compose up --build
+# Then open http://localhost
+name: concord
+
+x-backend-env: &backend-env
+  NODE_ENV: production
+  PORT: 4000
+  APP_URL: ${APP_URL:-http://localhost}
+  # Every origin the UI may be opened from (CSRF + WebSocket origin checks).
+  CORS_ORIGINS: ${APP_URL:-http://localhost},http://localhost,http://localhost:${HTTP_PORT:-80},http://127.0.0.1:${HTTP_PORT:-80},https://localhost:${HTTPS_PORT:-8443}
+  TRUST_PROXY: "1"
+  COOKIE_SECURE: ${COOKIE_SECURE:-false}
+  REQUIRE_EMAIL_VERIFICATION: ${REQUIRE_EMAIL_VERIFICATION:-true}
+  DEMO_MAILBOX: ${DEMO_MAILBOX:-false}
+  DATABASE_URL: postgres://${POSTGRES_USER:-concord}:${POSTGRES_PASSWORD:-concord}@postgres:5432/${POSTGRES_DB:-concord}
+  REDIS_URL: redis://redis:6379
+  JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET in .env (at least 32 characters)}
+  # Files are stored in the "uploads" volume. To use an external S3-compatible service instead
+  # (AWS S3, Cloudflare R2, Yandex Object Storage, Selectel…), set STORAGE_DRIVER=s3 and S3_* in .env.
+  STORAGE_DRIVER: ${STORAGE_DRIVER:-local}
+  STORAGE_LOCAL_DIR: /app/data/uploads
+  S3_ENDPOINT: ${S3_ENDPOINT:-}
+  S3_REGION: ${S3_REGION:-us-east-1}
+  S3_BUCKET: ${S3_BUCKET:-concord}
+  S3_ACCESS_KEY: ${S3_ACCESS_KEY:-}
+  S3_SECRET_KEY: ${S3_SECRET_KEY:-}
+  MAX_UPLOAD_MB: ${MAX_UPLOAD_MB:-25}
+  LIVEKIT_URL: http://livekit:7880
+  LIVEKIT_PUBLIC_URL: ${LIVEKIT_PUBLIC_URL:-/livekit}
+  LIVEKIT_API_KEY: ${LIVEKIT_API_KEY:-concord}
+  LIVEKIT_API_SECRET: ${LIVEKIT_API_SECRET:?set LIVEKIT_API_SECRET in .env (at least 32 characters)}
+  GIF_PROVIDER: ${GIF_PROVIDER:-giphy}
+  GIF_API_KEY: ${GIF_API_KEY:-}
+  SMTP_HOST: ${SMTP_HOST:-mailpit}
+  SMTP_PORT: ${SMTP_PORT:-1025}
+  SMTP_USER: ${SMTP_USER:-}
+  SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+  SMTP_STARTTLS: ${SMTP_STARTTLS:-false}
+  SMTP_TLS: ${SMTP_TLS:-false}
+  MAIL_FROM: ${MAIL_FROM:-Concord <no-reply@concord.local>}
+  SEED_ON_START: ${SEED_ON_START:-1}
+  PLATFORM_ADMIN_EMAILS: ${PLATFORM_ADMIN_EMAILS:-}
+  LOG_LEVEL: ${LOG_LEVEL:-info}
+
+services:
+  frontend:
+    build: ./frontend
+    ports:
+      # On a public server only Caddy (80/443) is exposed; nginx listens on localhost.
+      - "${HTTP_BIND:-0.0.0.0}:${HTTP_PORT:-80}:80"
+    depends_on:
+      backend:
+        condition: service_healthy
+    restart: unless-stopped
+
+  backend:
+    build: ./backend
+    environment: *backend-env
+    volumes:
+      - uploads:/app/data/uploads
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  postgres:
+    image: postgres:16-bookworm
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-concord}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-concord}
+      POSTGRES_DB: ${POSTGRES_DB:-concord}
+      POSTGRES_INITDB_ARGS: --encoding=UTF8 --locale=C.UTF-8
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+
+  # SFU. Signalling is proxied by nginx at /livekit; media uses the UDP range below (and TCP 7881 fallback).
+  livekit:
+    image: livekit/livekit-server:v1.13.9
+    # livekit-server reads its YAML from LIVEKIT_CONFIG and the advertised media IP from NODE_IP.
+    environment:
+      NODE_IP: ${LIVEKIT_NODE_IP:-127.0.0.1}
+      LIVEKIT_CONFIG: |
+        port: 7880
+        log_level: info
+        rtc:
+          tcp_port: ${LIVEKIT_TCP_PORT:-7881}
+          # all WebRTC media on ONE UDP port (easy firewall/NAT, no huge port range in Docker)
+          udp_port: ${LIVEKIT_UDP_PORT:-7882}
+          enable_loopback_candidate: true
+          use_external_ip: false
+          turn_servers:
+            - host: ${TURN_PUBLIC_HOST:-localhost}
+              port: 3478
+              protocol: udp
+              username: ${TURN_USERNAME:-concord}
+              credential: ${TURN_PASSWORD:?set TURN_PASSWORD in .env}
+            - host: ${TURN_PUBLIC_HOST:-localhost}
+              port: 3478
+              protocol: tcp
+              username: ${TURN_USERNAME:-concord}
+              credential: ${TURN_PASSWORD}
+        keys:
+          ${LIVEKIT_API_KEY:-concord}: ${LIVEKIT_API_SECRET}
+        webhook:
+          api_key: ${LIVEKIT_API_KEY:-concord}
+          urls:
+            - http://backend:4000/api/webhooks/livekit
+        room:
+          empty_timeout: 30
+          departure_timeout: 20
+    ports:
+      - "${LIVEKIT_TCP_PORT:-7881}:${LIVEKIT_TCP_PORT:-7881}/tcp"
+      - "${LIVEKIT_UDP_PORT:-7882}:${LIVEKIT_UDP_PORT:-7882}/udp"
+    restart: unless-stopped
+
+  # TURN relay for clients behind symmetric NAT / restrictive firewalls.
+  coturn:
+    image: coturn/coturn:4.18
+    command:
+      - -n
+      - --log-file=stdout
+      - --listening-port=3478
+      - --fingerprint
+      - --lt-cred-mech
+      - --realm=concord
+      - --user=${TURN_USERNAME:-concord}:${TURN_PASSWORD}
+      - --external-ip=${TURN_EXTERNAL_IP:-127.0.0.1}
+      - --min-port=49160
+      - --max-port=49200
+      - --no-cli
+      - --no-tlsv1
+      - --no-tlsv1_1
+      - --denied-peer-ip=0.0.0.0-0.255.255.255
+      - --denied-peer-ip=127.0.0.0-127.255.255.255
+      - --denied-peer-ip=169.254.0.0-169.254.255.255
+      # On a public server the relay must not reach private networks (set by setup.sh --server).
+      - --denied-peer-ip=${TURN_DENY_A:-0.0.0.0-0.0.0.0}
+      - --denied-peer-ip=${TURN_DENY_B:-0.0.0.0-0.0.0.0}
+      - --denied-peer-ip=${TURN_DENY_C:-0.0.0.0-0.0.0.0}
+      - --no-multicast-peers
+    ports:
+      - "3478:3478/udp"
+      - "3478:3478/tcp"
+      - "49160-49200:49160-49200/udp"
+    restart: unless-stopped
+
+  # HTTPS in front of the app for LAN testing (browsers allow microphone/camera only on HTTPS or localhost).
+  # Enabled by COMPOSE_PROFILES=https (set by ./scripts/setup.sh --lan). Certificates come from Caddy's local CA.
+  caddy:
+    image: caddy:2.11.7-alpine
+    profiles: ["https"]
+    environment:
+      SITE_ADDRESS: ${APP_URL:-https://127.0.0.1:8443}
+      HTTPS_PORT: ${HTTPS_PORT:-8443}
+      # Browsers send no SNI when opening https://<IP>; Caddy needs to know which certificate to use.
+      DEFAULT_SNI: ${LIVEKIT_NODE_IP:-localhost}
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddydata:/data
+    ports:
+      - "${HTTPS_PORT:-8443}:${HTTPS_PORT:-8443}"
+    depends_on:
+      - frontend
+    restart: unless-stopped
+
+  # Public HTTPS on a real server: automatic Let's Encrypt certificate for DOMAIN (COMPOSE_PROFILES=server).
+  caddy-public:
+    image: caddy:2.11.7-alpine
+    profiles: ["server"]
+    environment:
+      DOMAIN: ${DOMAIN:-localhost}
+      ACME_EMAIL: ${ACME_EMAIL:-admin@example.com}
+    volumes:
+      - ./deploy/Caddyfile.server:/etc/caddy/Caddyfile:ro
+      - caddydata:/data
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    depends_on:
+      - frontend
+    restart: unless-stopped
+
+  # Catches password-reset emails in development: http://localhost:8025
+  mailpit:
+    image: axllent/mailpit:v1.31.5
+    profiles: ["dev"]
+    ports:
+      - "127.0.0.1:8025:8025"
+    restart: unless-stopped
+
+volumes:
+  caddydata:
+  pgdata:
+  redisdata:
+  uploads:

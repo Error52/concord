@@ -1,0 +1,46 @@
+import {chromium} from 'playwright';
+import {mkdir} from 'node:fs/promises';
+const BASE=process.env.BASE_URL ?? 'http://localhost:8080';
+const SHOTS=process.env.SHOTS_DIR ?? 'test/screenshots';
+await mkdir(SHOTS,{recursive:true});
+const browser = await chromium.launch({executablePath:process.env.CHROMIUM_PATH || undefined,args:['--use-fake-ui-for-media-stream','--use-fake-device-for-media-stream','--autoplay-policy=no-user-gesture-required']});
+try {
+ const ctx = await browser.newContext({permissions:['microphone','camera']});
+ const page = await ctx.newPage();
+ page.on('pageerror',e=>console.log('pageerror',e.message));
+ page.on('websocket',ws=>{
+  console.log('WS',new URL(ws.url()).pathname);
+  ws.on('framesent',f=>{try{console.log('sent',JSON.parse(f.payload).op)}catch{console.log('sent binary')}});
+  ws.on('framereceived',f=>{try{console.log('received',JSON.parse(f.payload).t)}catch{console.log('received binary')}});
+  ws.on('socketerror',e=>console.log('socketerror',e));
+  ws.on('close',()=>console.log('WS close'));
+ });
+ await page.goto(`${BASE}/login`);
+ await page.getByLabel('Email').fill('alice@concord.local');
+ await page.getByLabel('Пароль').fill('demo12345');
+ await page.getByRole('button',{name:'Войти',exact:true}).click();
+ await page.getByRole('button',{name:'Demo Server',exact:true}).waitFor({timeout:12000});
+ await page.getByRole('button',{name:'Demo Server',exact:true}).click();
+ await page.getByRole('textbox',{name:'Написать в #general'}).waitFor();
+ console.log('Demo chat loaded');
+ const bobCtx=await browser.newContext({permissions:['microphone','camera']});
+ const bob=await bobCtx.newPage();
+ await bob.goto(`${BASE}/login`);
+ await bob.getByLabel('Email').fill('bob@concord.local');
+ await bob.getByLabel('Пароль').fill('demo12345');
+ await bob.getByRole('button',{name:'Войти',exact:true}).click();
+ await bob.getByRole('button',{name:'Demo Server',exact:true}).waitFor({timeout:12000});
+ await bob.getByRole('button',{name:'Demo Server',exact:true}).click();
+ const marker=`Проверка запуска ${Date.now()}`;
+ await page.getByRole('textbox',{name:'Написать в #general'}).fill(marker);
+ await page.getByRole('textbox',{name:'Написать в #general'}).press('Enter');
+ await bob.locator('.msg-content',{hasText:marker}).waitFor({timeout:10000});
+ console.log('Realtime chat: Alice -> Bob delivered');
+ await page.screenshot({path:`${SHOTS}/concord-preview.png`});
+ await page.locator('.chan',{hasText:'General'}).last().click();
+ await page.getByText('Голосовая связь подключена').waitFor({timeout:20000});
+ await bob.locator('.chan',{hasText:'General'}).last().click();
+ await bob.getByText('Голосовая связь подключена').waitFor({timeout:20000});
+ console.log('Voice: two clients connected to LiveKit');
+ await page.screenshot({path:`${SHOTS}/voice-smoke.png`});
+} finally { await browser.close(); }

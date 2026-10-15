@@ -1,0 +1,33 @@
+✔ concurrent expired requests share one refresh and retry with the new token (36.7635ms)
+✔ temporary refresh failures preserve the token and do not trigger logout (7.3671ms)
+✔ refresh retries a tab race; an actually expired session clears the token (140.5729ms)
+✔ development server rejects malformed/traversing URLs and missing chunks without crashing (224.8331ms)
+✔ voice gets a higher fidelity mono budget and loss protection; shared audio stays raw stereo (1.17ms)
+✔ receiver buffer leaves headroom for jitter without accumulating seconds of delay (0.2943ms)
+✔ buffer preference is optional and rejected/unsupported setters never break a call (0.2629ms)
+✔ auto respects small CPUs and keeps the high quality ceiling on capable machines (1.0557ms)
+✔ CPU pressure lowers frame rate before resolution, text retains sharpness (0.3476ms)
+✔ stream controller resists brief pressure, backs off and recovers gradually (0.49ms)
+✔ stream controller uses encoder time, ignores audio, tolerates missing stats and bounds its tier (0.3979ms)
+✔ bandwidth startup does not masquerade as CPU overload or erase screen detail (0.2905ms)
+✔ screen codec falls back on browsers without H.264 (0.1885ms)
+✔ stats: RTT, transport and codec come from the selected candidate pair and codec stats (2.8928ms)
+✔ stats: bitrates and packet loss are computed from deltas between samples (103.4475ms)
+✔ stats: playout buffers use interval deltas, tolerate counter reset and missing fields (0.5021ms)
+✔ stats: relay candidates are labelled as TURN; quality thresholds (0.2029ms)
+✔ VAD: opens on speech, holds through short gaps, closes after hangover (0.166ms)
+✔ VAD: auto threshold follows the noise floor (0.2269ms)
+✔ audio level helpers (0.2793ms)
+✔ message ids compare as big integers (0.127ms)
+✔ contrast validation mirrors the backend rule (0.2306ms)
+✔ router parses and builds paths (0.894ms)
+✔ formatting helpers (0.4881ms)
+✔ permission helper treats ADMINISTRATOR as all permissions (0.0913ms)
+ℹ tests 25
+ℹ suites 0
+ℹ pass 25
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 575.8781
