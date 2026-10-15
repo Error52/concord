@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { api, errorMessage } from '../../api/client';
-import { getState, setState, useApp } from '../../state/app';
-import { displayName, notificationTitle } from '../../state/actions';
+import { getState, useApp } from '../../state/app';
+import { clearNotifications,displayName,markNotificationsRead,notificationTitle } from '../../state/actions';
 import { navigate } from '../../state/router';
 import { toast } from '../../state/ui';
 import { formatTimestamp } from '../../utils/format';
@@ -25,7 +25,7 @@ export function InboxModal({ onClose }: { onClose: () => void }) {
   const items = useApp((s) => s.notifications);
   useEffect(() => {
     // Opening the inbox marks everything as read.
-    void api.post('/notifications/read', { ids: 'all' }).then(() => setState((s) => ({ unreadNotifications: 0, notifications: s.notifications.map((n) => ({ ...n, read: true })) })));
+    void markNotificationsRead().catch(err=>toast(errorMessage(err,'Не удалось отметить уведомления'),'error'));
   }, []);
   return (
     <Modal
@@ -36,10 +36,7 @@ export function InboxModal({ onClose }: { onClose: () => void }) {
         <button
           className="btn btn-ghost"
           onClick={() =>
-            void api.del('/notifications').then(
-              () => setState({ notifications: [], unreadNotifications: 0 }),
-              (err) => toast(errorMessage(err), 'error'),
-            )
+            void clearNotifications().catch(err=>toast(errorMessage(err),'error'))
           }
         >
           Очистить всё

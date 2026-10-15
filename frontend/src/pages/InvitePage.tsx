@@ -20,7 +20,9 @@ export function InvitePage({ code }: { code: string }) {
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   useEffect(() => {
-    api.get<Preview>(`/invites/${encodeURIComponent(code)}`).then(setPreview, (err) => setError(errorMessage(err, 'Приглашение недействительно')));
+    let current=true;setPreview(null);setError(null);setBusy(false);
+    api.get<Preview>(`/invites/${encodeURIComponent(code)}`).then(d=>{if(current)setPreview(d);}, (err) => {if(current)setError(errorMessage(err, 'Приглашение недействительно'));});
+    return ()=>{current=false;};
   }, [code]);
   return (
     <div className="auth-shell">

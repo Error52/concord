@@ -163,7 +163,8 @@ class VoiceEngine {
   constructor() {
     settingsStore.subscribe(() => this.onSettingsChanged(settingsStore.get()));
     gateway.on('voice:move', (d: { channelId: string }) => void this.join(d.channelId));
-    gateway.on('voice:disconnect', () => {
+    gateway.on('voice:disconnect', (d:{channelId:string}) => {
+      if(d?.channelId!==voiceStore.get().channelId)return;
       toast('Вы были отключены от голосового канала', 'info');
       void this.disconnect(false);
     });

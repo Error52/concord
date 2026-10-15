@@ -1,4 +1,4 @@
-import { execute, query, queryOne } from '../db/pool.js';
+import { query, queryOne } from '../db/pool.js';
 import { emit } from '../websocket/bus.js';
 import { Ev } from '../websocket/events.js';
 
@@ -47,11 +47,14 @@ export async function list(userId: string, limit = 50) {
   return { items: rows.map(toDto), unread: unread?.n ?? 0 };
 }
 
-export async function markRead(userId: string, ids: string[] | 'all'): Promise<void> {
-  if (ids === 'all') await execute(`UPDATE notifications SET read_at = now() WHERE user_id = $1 AND read_at IS NULL`, [userId]);
-  else await execute(`UPDATE notifications SET read_at = now() WHERE user_id = $1 AND id = ANY($2::uuid[])`, [userId, ids]);
+export interface NotificationMutation {ids:string[];unreadChanged:number}
+export async function markRead(userId: string, ids: string[] | 'all'): Promise<NotificationMutation> {
+  const rows=await query<{id:string}>(`UPDATE notifications SET read_at=now() WHERE user_id=$1 AND read_at IS NULL
+    AND ($2::uuid[] IS NULL OR id=ANY($2::uuid[])) RETURNING id`,[userId,ids==='all'?null:ids]);
+  return {ids:rows.map(r=>r.id),unreadChanged:rows.length};
 }
 
-export async function clear(userId: string): Promise<void> {
-  await execute(`DELETE FROM notifications WHERE user_id = $1`, [userId]);
+export async function clear(userId: string): Promise<NotificationMutation> {
+  const rows=await query<{id:string;read_at:Date|null}>(`DELETE FROM notifications WHERE user_id=$1 RETURNING id,read_at`,[userId]);
+  return {ids:rows.map(r=>r.id),unreadChanged:rows.filter(r=>r.read_at===null).length};
 }

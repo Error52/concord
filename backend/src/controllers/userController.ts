@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { Reply, validate, type Router } from '../http/router.js';
+import { validate, type Router } from '../http/router.js';
 import * as userService from '../services/userService.js';
 import * as notifications from '../services/notificationService.js';
 import * as search from '../services/searchService.js';
@@ -33,12 +33,10 @@ export function registerUsers(r: Router): void {
   r.get('/notifications', {}, async (ctx) => notifications.list(ctx.user.id));
   r.post('/notifications/read', {}, async (ctx) => {
     const body = validate(z.object({ ids: z.union([z.array(S.uuid).max(200), z.literal('all')]) }), ctx.body);
-    await notifications.markRead(ctx.user.id, body.ids);
-    return new Reply(204, undefined);
+    return notifications.markRead(ctx.user.id, body.ids);
   });
   r.delete('/notifications', {}, async (ctx) => {
-    await notifications.clear(ctx.user.id);
-    return new Reply(204, undefined);
+    return notifications.clear(ctx.user.id);
   });
 
   r.get('/bookmarks', {}, async (ctx) => messages.bookmarks(ctx.user.id));

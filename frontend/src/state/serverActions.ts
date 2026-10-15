@@ -1,7 +1,7 @@
 import { api, errorMessage } from '../api/client';
 import { getState, setState } from './app';
 import { firstTextChannel, refreshServer } from './actions';
-import { navigate } from './router';
+import { navigate,routerStore } from './router';
 import { toast } from './ui';
 import type { Channel, Dm, FullServer, Relation } from '../types';
 
@@ -65,11 +65,16 @@ export async function openDm(userId: string): Promise<void> {
 }
 
 export async function closeDm(id: string): Promise<void> {
-  await attempt(() => api.del(`/dm/${id}`), 'Не удалось закрыть диалог');
+  const previous=getState().dms[id];
+  const ok=await attempt(() => api.del(`/dm/${id}`).then(()=>true), 'Не удалось закрыть диалог');
+  const current=getState().dms[id];
+  if(!ok||(current&&current!==previous))return;
   setState((s) => {
     const { [id]: _, ...dms } = s.dms;
     return { dms };
   });
+  const route=routerStore.get().route;
+  if(route.name==='dm'&&route.channelId===id)navigate({name:'friends'});
 }
 
 const setRelations = (list: Relation[] | null) => list && setState({ relationships: Object.fromEntries(list.map((r) => [r.id, r])) });

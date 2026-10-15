@@ -9,7 +9,7 @@ import { audit, AuditAction } from './auditService.js';
 import { control, emit } from '../websocket/bus.js';
 import { Ev } from '../websocket/events.js';
 import { deleteMedia, storeProcessedImage } from './mediaService.js';
-import { voiceStatesForServer, forceDisconnectUser } from './voiceService.js';
+import { voiceStatesForServer,forceDisconnectUser,statesForChannels } from './voiceService.js';
 import { postSystem } from './messageService.js';
 import type { ChannelDTO } from '../models/dto.js';
 
@@ -105,6 +105,7 @@ export async function remove(serverId: string, userId: string): Promise<void> {
   if (!access.isOwner) throw Errors.forbidden('Удалить сервер может только владелец');
   const members = await repo.memberIds(serverId);
   const server = await repo.findServer(serverId);
+  for(const state of await voiceStatesForServer(serverId))await forceDisconnectUser(state.userId,serverId,state.channelId);
   await execute(`DELETE FROM servers WHERE id = $1`, [serverId]);
   await Promise.all([deleteMedia(server?.icon_key), deleteMedia(server?.banner_key)]);
   await emit(Ev.ServerDelete, { id: serverId }, { users: members });
@@ -279,6 +280,7 @@ export async function updateChannel(
 export async function deleteChannel(channelId: string, userId: string): Promise<void> {
   const ch = await channelServer(channelId);
   await requirePerm(ch.server_id!, userId, Perm.MANAGE_CHANNELS);
+  for(const state of await statesForChannels([channelId]))await forceDisconnectUser(state.userId,ch.server_id!,channelId);
   await execute(`DELETE FROM channels WHERE id = $1`, [channelId]);
   await audit(ch.server_id!, userId, AuditAction.ChannelDelete, { type: 'channel', id: channelId }, { name: ch.name });
   await emit(Ev.ChannelDelete, { id: channelId, serverId: ch.server_id }, { server: ch.server_id! });

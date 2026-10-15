@@ -209,9 +209,9 @@ export async function disconnectUser(actorId: string, serverId: string, targetId
 }
 
 /** Removes a user from voice in the given server (kick/ban/timeout/disconnect). */
-export async function forceDisconnectUser(targetId: string, serverId: string): Promise<void> {
+export async function forceDisconnectUser(targetId: string, serverId: string,channelId?:string): Promise<void> {
   const state = await getState(targetId);
-  if (state?.serverId !== serverId) return;
+  if (state?.serverId !== serverId||(channelId&&state.channelId!==channelId)) return;
   await emit(Ev.VoiceForceDisconnect, { channelId: state.channelId }, { users: [targetId] });
   await removeParticipant(roomName(state.channelId), targetId);
   await markLeft(targetId, state.channelId);

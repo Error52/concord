@@ -10,14 +10,23 @@ import { createHash } from 'node:crypto';
 import { deliverPendingMail } from '../src/services/mailOutbox.js';
 import {captureSmtp} from './smtpCapture.js';
 import {createServer} from 'node:http';
-import {markJoined,markLeft} from '../src/services/voiceService.js';
+import {markJoined,markLeft,forceDisconnectUser} from '../src/services/voiceService.js';
 import {Perm} from '../src/models/permissions.js';
 import {pendingRings} from '../src/services/callService.js';
 import {redis} from '../src/redis.js';
 import {react} from '../src/services/messageService.js';
+import {notify} from '../src/services/notificationService.js';
 
 let h: Harness;
 const c = (): Client => new Client(h.base);
+
+async function withLiveKitCapture(fn:(calls:{method:string;room:string;identity:string}[])=>Promise<void>){
+ const calls:{method:string;room:string;identity:string}[]=[];
+ const fake=createServer(async(req,res)=>{let body='';for await(const chunk of req)body+=chunk;calls.push({method:req.url!.split('/').at(-1)!,...JSON.parse(body)});res.setHeader('Content-Type','application/json');res.end('{}');});
+ await new Promise<void>(resolve=>fake.listen(0,'127.0.0.1',resolve));const previous=config.LIVEKIT_URL;
+ config.LIVEKIT_URL=`http://127.0.0.1:${(fake.address() as import('node:net').AddressInfo).port}`;
+ try{await fn(calls);}finally{config.LIVEKIT_URL=previous;await new Promise<void>(resolve=>fake.close(()=>resolve()));}
+}
 
 before(async () => {
   h = await startServer();
@@ -279,6 +288,41 @@ test('server creation gives default roles and channels; non-members get 404', as
   const outsider = await c().register('outsider');
   assert.equal((await outsider.get(`/api/servers/${serverId}`)).status, 404);
   assert.equal((await owner.get(`/api/servers/${serverId}`)).status, 200);
+});
+
+test('deleting a voice channel removes its active participants and occupancy',async()=>{
+ const {owner,member,serverId,voice}=await serverWithMember();
+ await withLiveKitCapture(async calls=>{
+  await markJoined(owner.user.id,voice.id);await markJoined(member.user.id,voice.id);
+  await forceDisconnectUser(member.user.id,serverId,'00000000-0000-4000-8000-000000000001');assert.equal(calls.length,0);
+  const gw=await connectGateway(h.base,member.token!);
+  try{
+   assert.equal((await owner.del(`/api/channels/${voice.id}`)).status,204);
+   assert.equal(await redis.get(`voice:user:${member.user.id}`),null);assert.equal(await redis.get(`voice:user:${owner.user.id}`),null);
+   assert.deepEqual(await redis.smembers(`voice:room:${voice.id}`),[]);
+   assert.equal(calls.filter(c=>c.method==='RemoveParticipant'&&c.room===`ch_${voice.id}`).length,2);
+   await gw.waitFor('voice:disconnect',d=>d.channelId===voice.id);
+  }finally{gw.close();}
+ });
+});
+test('deleting a server removes its active voice participants before cascading channels',async()=>{
+ const {owner,member,serverId,voice}=await serverWithMember();
+ await withLiveKitCapture(async calls=>{
+  await markJoined(member.user.id,voice.id);assert.equal((await owner.del(`/api/servers/${serverId}`)).status,204);
+  assert.equal(await redis.get(`voice:user:${member.user.id}`),null);assert.deepEqual(await redis.smembers(`voice:room:${voice.id}`),[]);
+  assert.equal(calls.filter(c=>c.method==='RemoveParticipant'&&c.identity===member.user.id).length,1);
+ });
+});
+test('notification mutations return exactly the affected ids and unread count',async()=>{
+ const a=await c().register('notif_snapshot_a'),b=await c().register('notif_snapshot_b');
+ await notify([a.user.id,b.user.id],'server',{content:'before read'});
+ const first=(await a.get('/api/notifications')).body.items[0].id;
+ const read=await a.post('/api/notifications/read',{ids:'all'});assert.equal(read.status,200);assert.deepEqual(read.body,{ids:[first],unreadChanged:1});
+ assert.deepEqual((await a.post('/api/notifications/read',{ids:'all'})).body,{ids:[],unreadChanged:0});
+ assert.equal((await b.get('/api/notifications')).body.unread,1);
+ await notify([a.user.id],'server',{content:'after read'});const beforeClear=(await a.get('/api/notifications')).body;
+ const cleared=await a.del('/api/notifications');assert.equal(cleared.status,200);assert.equal(cleared.body.unreadChanged,1);assert.deepEqual(cleared.body.ids.sort(),beforeClear.items.map((n:any)=>n.id).sort());
+ await notify([a.user.id],'server',{content:'after clear'});assert.equal((await a.get('/api/notifications')).body.unread,1);
 });
 
 test('permissions: members cannot manage channels; owners can; changes broadcast', async () => {

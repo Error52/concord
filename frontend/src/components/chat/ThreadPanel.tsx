@@ -1,9 +1,10 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { LuMessagesSquare, LuX } from 'react-icons/lu';
 import { api, errorMessage } from '../../api/client';
 import { gateway } from '../../state/actions';
 import {getState} from '../../state/app';
-import {messageForViewer,withReaction,type ReactionUpdate} from '../../utils/reactions';
+import type {ReactionUpdate} from '../../utils/reactions';
+import {applyThreadEvent,type ThreadData,type ThreadEvent} from '../../state/threadState';
 import { toast } from '../../state/ui';
 import { MessageItem, canManageIn } from './MessageItem';
 import { Composer } from './Composer';
@@ -11,39 +12,48 @@ import type { Message } from '../../types';
 
 /** Thread = a message plus its reply chain. New replies arrive live via the gateway. */
 export function ThreadPanel({ channelId, serverId, messageId, onClose }: { channelId: string; serverId: string | null; messageId: string; onClose: () => void }) {
-  const [data, setData] = useState<{ parent: Message; replies: Message[] } | null>(null);
+  const [data, setData] = useState<ThreadData | null>(null);
   const { manage, pin } = canManageIn(serverId);
 
-  const load = useCallback(() => {
-    api.get<{ parent: Message; replies: Message[] }>(`/messages/${messageId}/thread`).then(setData, (err) => {
-      toast(errorMessage(err, 'Не удалось открыть ветку'), 'error');
-      onClose();
-    });
-  }, [messageId, onClose]);
-
   useEffect(() => {
-    load();
+    let active=true,generation=0,loading=false,loaded=false;
+    let changes:ThreadEvent[]=[];
+    const load=async()=>{
+      const id=++generation;loading=true;changes=[];
+      try{
+        let snapshot:ThreadData|null=await api.get<ThreadData>(`/messages/${messageId}/thread`);
+        if(!active||id!==generation)return;
+        for(const event of changes){if(snapshot)snapshot=applyThreadEvent(snapshot,event,getState().me?.id??'');}
+        setData(snapshot);loaded=true;loading=false;
+      }catch(err){if(active&&id===generation){loading=false;toast(errorMessage(err,'Не удалось открыть ветку'),'error');if(!loaded)onClose();}}
+    };
+    const update=(event:ThreadEvent)=>{
+      if(loading)changes.push(event);
+      setData(d=>d?applyThreadEvent(d,event,getState().me?.id??''):d);
+    };
     const offNew = gateway.on('message:new', (m: Message) => {
-      if (m.replyTo?.id === messageId) setData((d) => (d && !d.replies.some((r) => r.id === m.id) ? { ...d, replies: [...d.replies, m] } : d));
+      if (m.replyTo?.id === messageId&&m.channelId===channelId) update({kind:'new',message:m});
     });
     const offUpd = gateway.on('message:update', (m: Message) =>
-      setData((d) => d && { parent: d.parent.id === m.id ? messageForViewer(m,getState().me?.id??'',d.parent) : d.parent, replies: d.replies.map((r) => (r.id === m.id ? messageForViewer(m,getState().me?.id??'',r) : r)) }),
+      m.channelId===channelId&&update({kind:'update',message:m}),
     );
-    const offReaction=gateway.on('reaction:update',(update:ReactionUpdate)=>setData(d=>{
-      if(!d)return d;const apply=(m:Message)=>m.id===update.messageId?withReaction(m,update,getState().me?.id??''):m;
-      return {parent:apply(d.parent),replies:d.replies.map(apply)};
-    }));
-    const offDel = gateway.on('message:delete', (x: { id: string }) => {
+    const offReaction=gateway.on('reaction:update',(reaction:ReactionUpdate)=>{if(reaction.channelId===channelId)update({kind:'reaction',update:reaction});});
+    const offDel = gateway.on('message:delete', (x: { id: string;channelId:string }) => {
+      if(x.channelId!==channelId)return;
       if (x.id === messageId) onClose();
-      setData((d) => d && { ...d, replies: d.replies.filter((r) => r.id !== x.id) });
+      update({kind:'delete',id:x.id});
     });
+    const offReady=gateway.on('ready',()=>void load());
+    void load();
     return () => {
+      active=false;++generation;
       offNew();
       offUpd();
       offDel();
       offReaction();
+      offReady();
     };
-  }, [messageId, load, onClose]);
+  }, [messageId,channelId,onClose]);
 
   return (
     <aside className="members thread-panel" style={{ width: 'min(380px, 100%)', display: 'flex', flexDirection: 'column', padding: 0 }}>

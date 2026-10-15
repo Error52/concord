@@ -47,8 +47,10 @@ export function SearchModal({ serverId, channelId, onClose }: { serverId: string
   useEffect(() => setOffset(0), [q, scope, authorId, inChannel, before, after, has]);
 
   useEffect(() => {
+    let current=true;
+    setQuick(null);setResults(null);setError(null);setLoading(false);
     const t = setTimeout(async () => {
-      if (q.trim() && scope === 'all') api.get<Quick>(`/search?q=${encodeURIComponent(q.trim())}`).then(setQuick, () => setQuick(null));
+      if (q.trim() && scope === 'all') api.get<Quick>(`/search?q=${encodeURIComponent(q.trim())}`).then(d=>{if(current)setQuick(d);}, () => {if(current)setQuick(null);});
       else setQuick(null);
       if (!q.trim() && !authorId && !has.length && !before && !after) {
         setResults(null);
@@ -67,15 +69,17 @@ export function SearchModal({ serverId, channelId, onClose }: { serverId: string
       params.set('limit', String(PAGE));
       setLoading(true);
       try {
-        setResults(await api.get(`/search/messages?${params}`));
+        const data=await api.get<{total:number;results:SearchResult[]}>(`/search/messages?${params}`);
+        if(!current)return;
+        setResults(data);
         setError(null);
       } catch (err) {
-        setError(errorMessage(err));
+        if(current)setError(errorMessage(err));
       } finally {
-        setLoading(false);
+        if(current)setLoading(false);
       }
     }, 300);
-    return () => clearTimeout(t);
+    return () => {current=false;clearTimeout(t);};
   }, [q, scope, authorId, inChannel, before, after, has, offset, serverId, channelId]);
 
   const jump = (m: SearchResult) => {

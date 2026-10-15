@@ -15,10 +15,11 @@ export function DiscoverPage() {
   const [servers, setServers] = useState<Server[] | null>(null);
   const mine = useApp((s) => s.servers);
   useEffect(() => {
+    let current=true;
     const t = setTimeout(() => {
-      api.get<Server[]>(`/servers/discover${q ? `?q=${encodeURIComponent(q)}` : ''}`).then(setServers, (err) => toast(errorMessage(err), 'error'));
+      api.get<Server[]>(`/servers/discover${q ? `?q=${encodeURIComponent(q)}` : ''}`).then(d=>{if(current)setServers(d);}, (err) => {if(current)toast(errorMessage(err), 'error');});
     }, 250);
-    return () => clearTimeout(t);
+    return () => {current=false;clearTimeout(t);};
   }, [q]);
   return (
     <div className="main-col">

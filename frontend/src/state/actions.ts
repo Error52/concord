@@ -77,6 +77,7 @@ function removeServer(s: AppState, sid: string): Partial<AppState> {
 }
 
 function onReady(d: ReadyPayload): void {
+  ++notificationGeneration;
   setState((s) => {
     let next: AppState = {
       ...s,
@@ -205,6 +206,19 @@ function onNotification(n: Notification): void {
   if (settings.desktopNotifications && !document.hasFocus()) showDesktopNotification(title, String(n.data.content ?? ''));
   if (n.type === 'friend_request') toast(title);
 }
+
+let notificationGeneration=0;
+interface NotificationMutation {ids:string[];unreadChanged:number}
+async function mutateNotifications(clear:boolean):Promise<void>{
+  const generation=notificationGeneration;
+  const result=await (clear?api.del<NotificationMutation>('/notifications'):api.post<NotificationMutation>('/notifications/read',{ids:'all'}));
+  if(generation!==notificationGeneration)return;
+  const ids=new Set(result.ids);
+  setState(s=>({notifications:clear?s.notifications.filter(n=>!ids.has(n.id)):s.notifications.map(n=>ids.has(n.id)?{...n,read:true}:n),
+    unreadNotifications:Math.max(0,s.unreadNotifications-result.unreadChanged)}));
+}
+export const markNotificationsRead=():Promise<void>=>mutateNotifications(false);
+export const clearNotifications=():Promise<void>=>mutateNotifications(true);
 
 export function notificationTitle(n: Notification): string {
   const who = (u: User | undefined) => u?.displayName || u?.username || 'Кто-то';
