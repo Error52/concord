@@ -1,0 +1,91 @@
+name: Concord checks
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: checks-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  frontend:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version: '24'
+          package-manager-cache: false
+      - run: npm install --global pnpm@11.25.0
+      - run: pnpm install --frozen-lockfile --ignore-scripts --config.node-linker=hoisted
+      - run: pnpm typecheck
+      - run: pnpm test
+      - run: pnpm build
+      - run: pnpm exec playwright install --with-deps chromium
+      - run: pnpm test:webrtc
+
+  backend:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:16-bookworm
+        env:
+          POSTGRES_USER: concord
+          POSTGRES_PASSWORD: ci-only-password
+          POSTGRES_DB: concord_ci_test
+          POSTGRES_INITDB_ARGS: --encoding=UTF8 --locale=C.UTF-8
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U concord -d concord_ci_test"
+          --health-interval 5s --health-timeout 3s --health-retries 20
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s --health-timeout 3s --health-retries 20
+    env:
+      NODE_ENV: test
+      DATABASE_URL: postgres://concord:ci-only-password@127.0.0.1:5432/concord_ci_test
+      REDIS_URL: redis://127.0.0.1:6379/1
+      JWT_SECRET: ci-only-jwt-secret-0123456789abcdef0123456789
+      LIVEKIT_API_KEY: ci-test
+      LIVEKIT_API_SECRET: ci-only-livekit-secret-0123456789abcdef
+      LIVEKIT_URL: http://127.0.0.1:17880
+      STORAGE_DRIVER: local
+      STORAGE_LOCAL_DIR: /tmp/concord-ci-uploads
+      APP_URL: http://localhost:5173
+      CORS_ORIGINS: http://localhost:5173
+      TRUST_PROXY: '1'
+      GIF_PROVIDER: none
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version: '24'
+          package-manager-cache: false
+      - run: npm install --global pnpm@11.25.0
+      - run: pnpm install --frozen-lockfile --ignore-scripts --config.node-linker=hoisted
+      - run: pnpm typecheck
+      - run: pnpm test
+      - run: pnpm build
