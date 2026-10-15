@@ -46,4 +46,4 @@ Receiver fps — моментальный WebRTC counter. Callback/s — сре�
 
 CPU-пределы и гистерезис проверены unit-тестами; слабая машина не заменялась искусственно хорошей статистикой. Фактическая нагрузка зависит от источника, браузера, кодировщика и канала. Capture идеальные размеры могут игнорироваться источником: дополнительно введён sender scaleResolutionDownBy, и ручной 720p подтвердился как 1280×720.
 
-Чистые исходники и продолжение работы: [QUICKSTART](../QUICKSTART.md), [HANDOFF](HANDOFF.md), [CLAUDE](../CLAUDE.md). Обезличенные доказательства: docs/results/*.json и e2e.log.
+Чистые исходники и продолжение работы: [QUICKSTART](../QUICKSTART.md), [HANDOFF](HANDOFF.md). Обезличенные доказательства: docs/results/*.json и e2e.log.
