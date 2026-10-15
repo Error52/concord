@@ -3,11 +3,11 @@ import { redis } from '../redis.js';
 import { config } from '../config.js';
 import { Errors } from '../http/errors.js';
 import { Perm, has } from '../models/permissions.js';
-import { requireChannel, requirePerm } from './permissionService.js';
+import { getAccess, requireChannel, requirePerm } from './permissionService.js';
 import { loadPublicUser } from '../repositories/userRepo.js';
 import { emit, type Target } from '../websocket/bus.js';
 import { Ev } from '../websocket/events.js';
-import { applyModeration, createJoinToken, removeParticipant, type TrackSourceGrant, type WebhookEvent } from '../webrtc/livekit.js';
+import { allowedPublishSources, applyModeration, createJoinToken, removeParticipant, type WebhookEvent } from '../webrtc/livekit.js';
 import { audit, AuditAction } from './auditService.js';
 import { log } from '../logger.js';
 import type { VoiceStateDTO } from '../models/dto.js';
@@ -61,16 +61,14 @@ export async function join(userId: string, channelId: string) {
   const mod = await getModeration(serverId, userId);
   const canSpeak = !ca.access || has(ca.access.perms, Perm.SPEAK);
   const canVideo = !ca.access || has(ca.access.perms, Perm.VIDEO);
-  const sources: TrackSourceGrant[] = ['screen_share_audio'];
-  if (canSpeak && !mod.serverMute && !mod.serverDeaf) sources.push('microphone');
-  if (canVideo) sources.push('camera', 'screen_share');
+  const sources=allowedPublishSources({...mod,allowSpeak:canSpeak,allowVideo:canVideo});
 
   const token = createJoinToken({
     room: roomName(channelId),
     identity: userId,
     name: user?.displayName || user?.username || 'user',
     metadata: JSON.stringify({ avatarUrl: user?.avatarUrl ?? null, username: user?.username }),
-    canPublish: true,
+    canPublish: sources.length>0,
     canSubscribe: !mod.serverDeaf,
     sources,
   });
@@ -177,7 +175,11 @@ export async function setServerMute(actorId: string, serverId: string, targetId:
   else await redis.del(modKey(serverId, targetId));
   const state = await getState(targetId);
   if (state?.serverId === serverId) {
-    await applyModeration(roomName(state.channelId), targetId, { ...next, allowVideo: true }).catch((err) =>
+    const access=await getAccess(serverId,targetId);
+    const connected=!!access&&has(access.perms,Perm.CONNECT);
+    await applyModeration(roomName(state.channelId), targetId, {
+      ...next,allowVideo:connected&&has(access!.perms,Perm.VIDEO),allowSpeak:connected&&has(access!.perms,Perm.SPEAK),
+    }).catch((err) =>
       log.warn('livekit moderation failed', { err }),
     );
     const updated = { ...state, ...next };

@@ -8,6 +8,10 @@ import { config } from '../src/config.js';
 import { pool } from '../src/db/pool.js';
 import { createHash } from 'node:crypto';
 import { deliverPendingMail } from '../src/services/mailOutbox.js';
+import {captureSmtp} from './smtpCapture.js';
+import {createServer} from 'node:http';
+import {markJoined,markLeft} from '../src/services/voiceService.js';
+import {Perm} from '../src/models/permissions.js';
 
 let h: Harness;
 const c = (): Client => new Client(h.base);
@@ -101,6 +105,27 @@ test('login: wrong password, success, CSRF header required for cookie endpoints'
   const ok = await c().post('/api/auth/login', { email: 'bob@example.com', password: 'password123' });
   assert.equal(ok.status, 200);
   assert.ok(ok.body.accessToken);
+});
+
+test('mail worker delivers current links and skips expired or superseded authentication mail',async()=>{
+ const reset=await c().register('mail_current_reset');
+ await reset.post('/api/auth/password/forgot',{email:reset.user.email});
+ await pool.query(`UPDATE password_resets SET expires_at=now()-interval '1 minute' WHERE user_id=$1`,[reset.user.id]);
+ await reset.post('/api/auth/password/forgot',{email:reset.user.email});
+ await reset.post('/api/auth/password/forgot',{email:reset.user.email});
+ const verification=c(),signup=await verification.post('/api/auth/register',{username:'mail_current_verify',email:'mail_current_verify@example.com',password:'password123'});
+ verification.token=signup.body.accessToken;
+ await pool.query(`UPDATE email_verifications SET created_at=now()-interval '2 minutes' WHERE user_id=$1`,[signup.body.user.id]);
+ assert.equal((await verification.post('/api/auth/email/resend')).status,200);
+ const capture=await captureSmtp(),previous={SMTP_HOST:config.SMTP_HOST,SMTP_PORT:config.SMTP_PORT,SMTP_USER:config.SMTP_USER,SMTP_PASSWORD:config.SMTP_PASSWORD,SMTP_TLS:config.SMTP_TLS,SMTP_STARTTLS:config.SMTP_STARTTLS};
+ Object.assign(config,capture.options);
+ try{await deliverPendingMail(100);}finally{Object.assign(config,previous);await capture.close();}
+ assert.equal(capture.messages.filter(m=>m.recipient===reset.user.email).length,1);
+ assert.equal(capture.messages.filter(m=>m.recipient===signup.body.user.email).length,1);
+ const rows=await pool.query(`SELECT purpose,delivered_at,attempts FROM outbound_emails WHERE user_id=ANY($1::uuid[]) ORDER BY created_at`,[[reset.user.id,signup.body.user.id]]);
+ assert.equal(rows.rows.filter(r=>r.purpose==='password-reset'&&r.delivered_at).length,1);
+ assert.equal(rows.rows.filter(r=>r.purpose==='verification'&&r.delivered_at).length,1);
+ assert.ok(rows.rows.filter(r=>!r.delivered_at).every(r=>r.attempts===0));
 });
 
 test('demo verification mailbox is disabled by default and isolates authenticated users',async()=>{
@@ -218,7 +243,11 @@ test('changing password revokes every token on other devices and keeps the curre
   const u=await c().register('change_session'),device=c();
   const login=await device.post('/api/auth/login',{email:'change_session@example.com',password:'password123'});device.token=login.body.accessToken;
   const retired=device.token;await device.post('/api/auth/refresh');
+  await u.post('/api/auth/password/forgot',{email:u.user.email});
+  const resetLetter=await pool.query(`SELECT text_body FROM outbound_emails WHERE user_id=$1 AND purpose='password-reset' ORDER BY created_at DESC LIMIT 1`,[u.user.id]);
+  const oldReset=resetLetter.rows[0].text_body.match(/token=([^\s]+)/)[1];
   assert.equal((await u.post('/api/auth/password/change',{currentPassword:'password123',newPassword:'changedpassword123'})).status,200);
+  assert.equal((await c().post('/api/auth/password/reset',{token:oldReset,password:'obsoletepassword123'})).status,400,'changing password invalidates outstanding reset links');
   device.token=retired;assert.equal((await device.get('/api/users/me')).status,401);
   assert.equal((await device.post('/api/auth/refresh')).status,401);
   assert.equal((await u.get('/api/users/me')).status,200);
@@ -611,6 +640,27 @@ test('gateway: accepts a heartbeat sent immediately after authentication', async
   } finally {
     gateway.close();
   }
+});
+
+test('voice role restrictions survive moderation and prohibit screen audio without VIDEO',async()=>{
+ const {owner,member,serverId,voice}=await serverWithMember();
+ const updates:{canPublish:boolean;canPublishSources:string[]}[]=[];
+ const fake=createServer(async(req,res)=>{let body='';for await(const chunk of req)body+=chunk;updates.push(JSON.parse(body).permission);res.setHeader('Content-Type','application/json');res.end('{}');});
+ await new Promise<void>(resolve=>fake.listen(0,'127.0.0.1',resolve));
+ const previous=config.LIVEKIT_URL;config.LIVEKIT_URL=`http://127.0.0.1:${(fake.address() as import('node:net').AddressInfo).port}`;
+ try{
+  await pool.query(`UPDATE roles SET permissions=$2 WHERE server_id=$1 AND is_default`,[serverId,Perm.CONNECT.toString()]);
+  const token=await member.post(`/api/voice/${voice.id}/token`);assert.equal(token.status,200);
+  const grant=verifyJwt<any>(token.body.token,config.LIVEKIT_API_SECRET)!;
+  assert.equal(grant.video.canPublish,false);assert.deepEqual(grant.video.canPublishSources,[]);
+  await markJoined(member.user.id,voice.id);
+  assert.equal((await owner.patch(`/api/servers/${serverId}/voice/${member.user.id}`,{serverMute:true})).status,200);
+  assert.equal((await owner.patch(`/api/servers/${serverId}/voice/${member.user.id}`,{serverMute:false})).status,200);
+  assert.equal(updates.length,2);assert.ok(updates.every(p=>!p.canPublish&&p.canPublishSources.length===0));
+  await pool.query(`UPDATE roles SET permissions=$2 WHERE server_id=$1 AND is_default`,[serverId,(Perm.CONNECT|Perm.SPEAK).toString()]);
+  const onlyMic=verifyJwt<any>((await member.post(`/api/voice/${voice.id}/token`)).body.token,config.LIVEKIT_API_SECRET)!;
+  assert.deepEqual(onlyMic.video.canPublishSources,['microphone']);
+ }finally{config.LIVEKIT_URL=previous;await markLeft(member.user.id,voice.id);await new Promise<void>(resolve=>fake.close(()=>resolve()));}
 });
 
 test('gateway: rejects bad tokens, relays typing and DM call signalling', async () => {

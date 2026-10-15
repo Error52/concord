@@ -239,6 +239,7 @@ export async function changePassword(userId: string, sessionId: string, current:
     const currentSession=await queryOne<{family_id:string}>(`SELECT family_id FROM sessions WHERE id=$1 AND user_id=$2`,[sessionId,userId],db);
     if(!currentSession)throw new AppError(401,'SESSION_EXPIRED','Сессия истекла');
     await execute(`UPDATE users SET password_hash=$2,updated_at=now() WHERE id=$1`,[userId,passwordHash],db);
+    await execute(`UPDATE password_resets SET used_at=now() WHERE user_id=$1 AND used_at IS NULL`,[userId],db);
     const others=await query<{id:string}>(`UPDATE sessions SET revoked_at=coalesce(revoked_at,now()) WHERE user_id=$1 AND family_id<>$2 RETURNING id`,[userId,currentSession.family_id],db);
     return others.map(s=>s.id);
   });
@@ -253,13 +254,13 @@ export async function requestPasswordReset(email: string): Promise<void> {
   await tx(async (db) => {
     await queryOne(`SELECT id FROM users WHERE id=$1 FOR UPDATE`, [row.id], db);
     await execute(`UPDATE password_resets SET used_at=now() WHERE user_id=$1 AND used_at IS NULL`, [row.id], db);
-    await execute(`INSERT INTO password_resets (user_id, token_hash, expires_at) VALUES ($1,$2,now()+interval '1 hour')`, [row.id,sha256(token)], db);
+    const reset=await queryOne<{expires_at:Date}>(`INSERT INTO password_resets (user_id, token_hash, expires_at) VALUES ($1,$2,now()+interval '1 hour') RETURNING expires_at`, [row.id,sha256(token)], db);
     await queueMail(row.id, {
       to: row.email,
       subject: 'Concord — восстановление пароля',
       text: `Чтобы задать новый пароль, откройте ссылку (действует 1 час):\n${link}\n\nЕсли вы не запрашивали сброс, просто проигнорируйте это письмо.`,
       html: `<p>Чтобы задать новый пароль, нажмите на ссылку (действует 1 час):</p><p><a href="${link}">Сбросить пароль</a></p><p>Если вы не запрашивали сброс, проигнорируйте это письмо.</p>`,
-    }, db);
+    }, db,{purpose:'password-reset',tokenHash:sha256(token),expiresAt:reset!.expires_at});
   });
 }
 
@@ -285,8 +286,8 @@ async function queueEmailVerification(userId:string,email:string,db:Queryable):P
   const token=randomBytes(32).toString('base64url');
   const link=`${config.APP_URL}/verify-email?token=${token}`;
   await execute(`UPDATE email_verifications SET used_at=now() WHERE user_id=$1 AND used_at IS NULL`, [userId], db);
-  await execute(`INSERT INTO email_verifications (user_id,token_hash,expires_at) VALUES ($1,$2,now()+interval '24 hours')`, [userId,sha256(token)], db);
-  await queueMail(userId,{to:email,subject:'Concord — подтвердите почту',text:`Подтвердите адрес электронной почты, чтобы завершить регистрацию:\n${link}\n\nСсылка действует 24 часа. Если вы не создавали аккаунт, проигнорируйте письмо.`,html:`<p>Подтвердите адрес электронной почты, чтобы завершить регистрацию:</p><p><a href="${link}">Подтвердить почту</a></p><p>Ссылка действует 24 часа. Если вы не создавали аккаунт, проигнорируйте письмо.</p>`},db);
+  const verification=await queryOne<{expires_at:Date}>(`INSERT INTO email_verifications (user_id,token_hash,expires_at) VALUES ($1,$2,now()+interval '24 hours') RETURNING expires_at`, [userId,sha256(token)], db);
+  await queueMail(userId,{to:email,subject:'Concord — подтвердите почту',text:`Подтвердите адрес электронной почты, чтобы завершить регистрацию:\n${link}\n\nСсылка действует 24 часа. Если вы не создавали аккаунт, проигнорируйте письмо.`,html:`<p>Подтвердите адрес электронной почты, чтобы завершить регистрацию:</p><p><a href="${link}">Подтвердить почту</a></p><p>Ссылка действует 24 часа. Если вы не создавали аккаунт, проигнорируйте письмо.</p>`},db,{purpose:'verification',tokenHash:sha256(token),expiresAt:verification!.expires_at});
 }
 
 export async function resendEmailVerification(userId:string):Promise<void> {

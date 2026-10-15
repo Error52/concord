@@ -23,7 +23,6 @@ export interface ConnectionStats {
 }
 
 interface Counters {
-  t: number;
   bytesSent: number;
   bytesReceived: number;
   audioBytesSent: number;
@@ -62,7 +61,8 @@ export function classify(rttMs: number | null, lossPct: number | null, jitterMs:
 }
 
 export class StatsSampler {
-  private prev: Counters | null = null;
+  private previousAt: number | null = null;
+  private trackPrev = new Map<string, Counters>();
   private bufferPrev = new Map<string, { delay: number; count: number }>();
 
   /**
@@ -72,9 +72,30 @@ export class StatsSampler {
   sample(publisher: (RTCStatsReport | undefined)[], subscriber: (RTCStatsReport | undefined)[]): ConnectionStats {
     const pub = entries(publisher);
     const sub = entries(subscriber);
-    const all = [...pub, ...sub];
-    const byId = new Map(all.map((s) => [s.id, s]));
+    // Publisher/subscriber peer connections may reuse IDs such as T01 and codec IDs.
+    const pubById = new Map(pub.map((s) => [s.id, s]));
+    const subById = new Map(sub.map((s) => [s.id, s]));
     const now = performance.now();
+    const nextTracks = new Map<string, Counters>();
+    const delta = (s: StatsRecord, direction: 'publisher' | 'subscriber'): Counters => {
+      const key=`${direction}:${s.id}:${s.ssrc??''}:${s.kind??s.mediaType??''}`;
+      const counters: Counters = {
+        bytesSent:num(s.bytesSent)??0, bytesReceived:num(s.bytesReceived)??0,
+        audioBytesSent:(s.kind??s.mediaType)==='audio'?(num(s.bytesSent)??0):0,
+        packetsReceived:num(s.packetsReceived)??0, packetsLost:num(s.packetsLost)??0,
+      };
+      const previous=this.trackPrev.get(key);nextTracks.set(key,counters);
+      // A new/restarted RTP stream establishes its own baseline, rather than adding lifetime counters.
+      if(!previous||counters.bytesSent<previous.bytesSent||counters.bytesReceived<previous.bytesReceived){
+        return {bytesSent:0,bytesReceived:0,audioBytesSent:0,packetsReceived:0,packetsLost:0};
+      }
+      return {
+        bytesSent:counters.bytesSent-previous.bytesSent,bytesReceived:counters.bytesReceived-previous.bytesReceived,
+        audioBytesSent:counters.audioBytesSent-previous.audioBytesSent,
+        packetsReceived:Math.max(0,counters.packetsReceived-previous.packetsReceived),
+        packetsLost:Math.max(0,counters.packetsLost-previous.packetsLost),
+      };
+    };
 
     let rtt: number | null = null;
     let iceState: string | null = null;
@@ -83,6 +104,7 @@ export class StatsSampler {
     // Selected candidate pair, preferring the publisher transport.
     for (const list of [pub, sub]) {
       if (rtt !== null) break;
+      const byId=list===pub?pubById:subById;
       const tr = list.find((s) => s.type === 'transport');
       const pairId = tr?.selectedCandidatePairId as string | undefined;
       const pair = (pairId ? byId.get(pairId) : undefined) ?? list.find((s) => s.type === 'candidate-pair' && (s.nominated || s.selected) && s.state === 'succeeded');
@@ -123,10 +145,11 @@ export class StatsSampler {
 
     for (const s of pub) {
       if (s.type === 'outbound-rtp') {
-        bytesSent += num(s.bytesSent) ?? 0;
-        if (s.kind === 'audio') {
-          audioBytesSent += num(s.bytesSent) ?? 0;
-          const c = byId.get(s.codecId as string);
+        const change=delta(s,'publisher');
+        bytesSent += change.bytesSent;
+        if ((s.kind??s.mediaType) === 'audio') {
+          audioBytesSent += change.audioBytesSent;
+          const c = pubById.get(s.codecId as string);
           if (c) codec = String(c.mimeType ?? '').split('/')[1] ?? codec;
         }
       }
@@ -145,42 +168,43 @@ export class StatsSampler {
       const kind = s.kind ?? s.mediaType;
       const delay = num(s.jitterBufferDelay), count = num(s.jitterBufferEmittedCount);
       if ((kind === 'audio' || kind === 'video') && delay !== null && count !== null) {
-        const prev = this.bufferPrev.get(s.id);
+        const key=`${s.id}:${s.ssrc??''}`;
+        const prev = this.bufferPrev.get(key);
         const dd = prev && delay >= prev.delay && count >= prev.count ? delay - prev.delay : delay;
         const dc = prev && delay >= prev.delay && count >= prev.count ? count - prev.count : count;
-        nextBuffers.set(s.id, { delay, count });
+        nextBuffers.set(key, { delay, count });
         if (dc > 0 && dd >= 0) { buffers[kind].delay += dd; buffers[kind].count += dc; }
       }
-      bytesReceived += num(s.bytesReceived) ?? 0;
-      packetsReceived += num(s.packetsReceived) ?? 0;
-      packetsLost += Math.max(0, num(s.packetsLost) ?? 0);
+      const change=delta(s,'subscriber');
+      bytesReceived += change.bytesReceived;
+      packetsReceived += change.packetsReceived;
+      packetsLost += change.packetsLost;
       const j = num(s.jitter);
-      if (j !== null && s.kind === 'audio') {
+      if (j !== null && kind === 'audio') {
         jitterSum += j * 1000;
         jitterN++;
       }
-      if (!codec && s.kind === 'audio') {
-        const c = byId.get(s.codecId as string);
+      if (!codec && kind === 'audio') {
+        const c = subById.get(s.codecId as string);
         if (c) codec = String(c.mimeType ?? '').split('/')[1] ?? null;
       }
     }
 
-    const cur: Counters = { t: now, bytesSent, bytesReceived, audioBytesSent, packetsReceived, packetsLost };
     let uploadKbps: number | null = null;
     let downloadKbps: number | null = null;
     let audioKbps: number | null = null;
     let lossPct: number | null = remoteLossFraction !== null ? remoteLossFraction * 100 : null;
-    const p = this.prev;
-    if (p && now > p.t) {
-      const dt = (now - p.t) / 1000;
-      uploadKbps = Math.max(0, ((bytesSent - p.bytesSent) * 8) / 1000 / dt);
-      downloadKbps = Math.max(0, ((bytesReceived - p.bytesReceived) * 8) / 1000 / dt);
-      audioKbps = Math.max(0, ((audioBytesSent - p.audioBytesSent) * 8) / 1000 / dt);
-      const recv = packetsReceived - p.packetsReceived;
-      const lost = packetsLost - p.packetsLost;
+    if (this.previousAt!==null && now > this.previousAt) {
+      const dt = (now - this.previousAt) / 1000;
+      uploadKbps = bytesSent * 8 / 1000 / dt;
+      downloadKbps = bytesReceived * 8 / 1000 / dt;
+      audioKbps = audioBytesSent * 8 / 1000 / dt;
+      const recv = packetsReceived;
+      const lost = packetsLost;
       if (recv + lost > 0) lossPct = Math.max(lossPct ?? 0, (lost / (recv + lost)) * 100);
     }
-    this.prev = cur;
+    this.previousAt=now;
+    this.trackPrev=nextTracks;
     this.bufferPrev = nextBuffers;
     const jitter = jitterN ? jitterSum / jitterN : null;
     return {
@@ -202,7 +226,8 @@ export class StatsSampler {
   }
 
   reset(): void {
-    this.prev = null;
+    this.previousAt = null;
+    this.trackPrev.clear();
     this.bufferPrev.clear();
   }
 }

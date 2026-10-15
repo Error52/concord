@@ -18,7 +18,7 @@ let a,b;
 async function login(email,capture=false) {
  const context=await browser.newContext({viewport:{width:1440,height:900},permissions:['microphone','camera']});
  await context.addInitScript(({capture,quality,motion})=>{
-  localStorage.setItem('concord.settings.v1',JSON.stringify({streamQuality:quality}));
+  localStorage.setItem('concord.settings.v1',JSON.stringify({streamQuality:quality,...(capture?{inputDeviceId:'concord-unplugged-test-device'}:{})}));
   const NativePC=window.RTCPeerConnection,NativeAudio=window.AudioContext;
   window.__mediaPeers=[];window.__mediaContexts=[];window.__mediaCaptures=[];window.__mediaRemoteCandidates=[];
   const NativeSocket=window.WebSocket;window.__mediaSockets=[];
@@ -30,6 +30,10 @@ async function login(email,capture=false) {
   window.AudioContext=class extends NativeAudio{constructor(...args){super(...args);window.__mediaContexts.push(this);}};
   const gum=navigator.mediaDevices.getUserMedia.bind(navigator.mediaDevices);
   navigator.mediaDevices.getUserMedia=async(o)=>{
+   if(o.audio?.deviceId?.exact==='concord-unplugged-test-device'){
+    window.__mediaUnpluggedFallback=true;
+    throw new DOMException('Saved microphone was unplugged','NotFoundError');
+   }
    if(o.audio && window.__mediaDenyNextMic){window.__mediaDenyNextMic=false;throw new DOMException('Test permission denied','NotAllowedError');}
    const delay=o.audio?window.__mediaDelayNextMic:window.__mediaDelayNextCamera;
    if(o.audio)window.__mediaDelayNextMic=0;else window.__mediaDelayNextCamera=0;
@@ -88,6 +92,8 @@ async function noCapture(page) {
 }
 try {
  a=await login('alice@concord.local',true);b=await login('bob@concord.local');
+ result.micDeviceFallback=await a.evaluate(()=>window.__mediaUnpluggedFallback&&JSON.parse(localStorage.getItem('concord.settings.v1')).inputDeviceId==='default');
+ assert.equal(result.micDeviceFallback,true,'a missing saved microphone falls back to the default device');
  result.logicalCores=await a.evaluate(()=>navigator.hardwareConcurrency);
  const start=Date.now();await a.locator('.stage-controls').getByRole('button',{name:'Демонстрация экрана',exact:true}).click();
  await b.waitForFunction(()=>document.querySelector('.tile.screen video')?.readyState>=2);
@@ -192,6 +198,19 @@ try {
  await a.getByRole('button',{name:'Подключиться',exact:true}).click();await a.locator('.stage-controls').waitFor();
  await a.evaluate(()=>{window.__mediaDelayNextCamera=800;});await a.locator('.stage-controls').getByRole('button',{name:'Камера',exact:true}).click();
  await a.locator('.stage-controls').getByRole('button',{name:'Отключиться',exact:true}).click();await a.waitForTimeout(1100);await noCapture(a);result.cancelPendingCamera=true;
+ for(const [kind,label] of [['Camera','Камера'],['Screen','Демонстрация экрана']]){
+  await a.getByRole('button',{name:'Подключиться',exact:true}).click();await a.locator('.stage-controls').waitFor();
+  await a.evaluate(k=>{window[`__mediaDelayNext${k}`]=3000;},kind);
+  await a.locator('.stage-controls').getByRole('button',{name:label,exact:true}).click();
+  await a.locator('.stage-controls').getByRole('button',{name:'Отключиться',exact:true}).click();
+  await a.getByRole('button',{name:'Подключиться',exact:true}).click();await a.locator('.stage-controls').waitFor();
+  await a.locator('.stage-controls').getByRole('button',{name:label,exact:true}).click();
+  await a.waitForFunction(()=>window.__mediaPeers.some(pc=>pc.connectionState!=='closed'&&pc.getSenders().some(s=>s.track?.kind==='video'&&s.track.readyState==='live')),null,{timeout:10000});
+  await a.waitForTimeout(3200);
+  assert.ok(await a.evaluate(()=>window.__mediaPeers.some(pc=>pc.connectionState!=='closed'&&pc.getSenders().some(s=>s.track?.kind==='video'&&s.track.readyState==='live'))),'late capture cannot tear down a newer publication');
+  await a.locator('.stage-controls').getByRole('button',{name:'Отключиться',exact:true}).click();await noCapture(a);
+  result[`rapid${kind}Retry`]=true;
+ }
  }
  assert.equal(result.errors.length,0,'no unhandled browser errors');
  console.log(JSON.stringify(result,null,2));

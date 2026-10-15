@@ -11,7 +11,7 @@ RUN npm run build
 FROM build AS test
 COPY migrations ./migrations
 COPY test ./test
-CMD ["node", "--import", "tsx", "--test", "--test-force-exit", "--test-concurrency=1", "test/api.test.ts", "test/unit.test.ts", "test/mailer.test.ts"]
+CMD ["node", "--import", "tsx", "--test", "--test-force-exit", "--test-concurrency=1", "test/*.test.ts"]
 
 FROM build AS production-dependencies
 RUN pnpm prune --prod --ignore-scripts --config.node-linker=hoisted

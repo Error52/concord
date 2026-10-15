@@ -1,10 +1,10 @@
-# Быстрый запуск переданной версии
+# Быстрый запуск
 
-**Обновление LAN, 13 октября:** установленный сайт обслуживает **https://192.168.1.249:8443**. Для доступа других устройств осталось разрешить узкие правила брандмауэра и доверить CA; системные запросы Windows были отменены. Подробный порядок, личная демопочта, сертификаты и новый `node scripts/dev.mjs lan <IP>` — в **docs/LAN.md**. Существующий дизайн и данные сохранены.
+Обновление 16 октября: исправлены переподключение, гонки сессий и захвата камеры/экрана, права публикации и доставка актуальных писем. Дизайн сохранён. Точные результаты и границы проверки — [VERIFICATION-2026-10-16.md](docs/VERIFICATION-2026-10-16.md).
 
-Обновление 13 октября: новым пользователям нужно подтвердить почту. На текущем компьютере письмо смотреть на **http://localhost:58025**; в Docker dev-профиле — **http://localhost:8025**. Для настоящей отправки нужен собственный SMTP. После подтверждения аккаунт открывает приложение; существующие пользователи сохраняют доступ. Подробности и новые команды тестов — `docs/REGISTRATION.md`.
+Для LAN используйте `node scripts/dev.mjs lan <IP>` и [docs/LAN.md](docs/LAN.md). На других устройствах нужно доверить сертификату и разрешить сетевые порты на сервере. Старые адреса в исторических отчётах относятся к прежнему стенду.
 
-Архив — полный исходный проект. Для просмотра на текущем компьютере уже работает **http://localhost:5173**; кнопки запуска рядом с архивом относятся к установленной Windows-копии. Для нового компьютера используйте инструкции ниже.
+Новым пользователям нужно подтвердить почту. В Docker dev-профиле почтовый ящик открыт на **http://localhost:8025**; в LAN-демо собственное письмо доступно после входа. Для настоящей отправки настройте SMTP и выключите `DEMO_MAILBOX`; подробности — [docs/REGISTRATION.md](docs/REGISTRATION.md).
 
 ## Локальный стек через Docker
 
@@ -33,17 +33,19 @@ node scripts/dev.mjs stop
 
 ```sh
 cd backend
-pnpm install --frozen-lockfile --ignore-scripts
-pnpm typecheck
-pnpm build
+pnpm install --frozen-lockfile --ignore-scripts --config.node-linker=hoisted
+npm run typecheck
+npm run build
 cd ../frontend
-pnpm install --frozen-lockfile --ignore-scripts
-pnpm typecheck
-pnpm test
-pnpm build
-pnpm exec playwright install chromium
-pnpm test:webrtc
+pnpm install --frozen-lockfile --ignore-scripts --config.node-linker=hoisted
+npm run typecheck
+npm test
+npm run build
+node node_modules/playwright/cli.js install chromium
+npm run test:webrtc
 ```
+
+Установка использует зафиксированный pnpm lockfile и не выполняет скрипты зависимостей. Команды `npm run` используют уже установленные пакеты: повторная автоматическая установка pnpm перед запуском здесь не нужна. Эти команды проверяются в GitHub Actions на чистом Ubuntu.
 
 API-тесты с изолированными PostgreSQL и Redis из корня проекта:
 

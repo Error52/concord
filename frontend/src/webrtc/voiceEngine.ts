@@ -324,6 +324,7 @@ class VoiceEngine {
     const room = this.room;
     const seq = ++this.cameraSeq;
     if (!on) {
+      this.cameraStarting=false;
       const tracks = new Set(this.cameraTracks);
       const track = room.localParticipant.getTrackPublication(Track.Source.Camera)?.track;
       if (track) tracks.add(track);
@@ -359,7 +360,7 @@ class VoiceEngine {
       toast(mediaErrorMessage(err, 'camera'), 'error');
       voiceStore.set({ camera: false });
     } finally {
-      this.cameraStarting = false;
+      if(this.room===room && seq===this.cameraSeq)this.cameraStarting = false;
     }
   }
 
@@ -462,7 +463,7 @@ class VoiceEngine {
       if (deniedBySystem || (name !== 'NotAllowedError' && name !== 'AbortError')) toast(mediaErrorMessage(err, 'screen'), 'error');
       voiceStore.set({ screen: false, screenAudio: null });
     } finally {
-      this.screenStarting = false;
+      if(this.room===room && seq===this.screenSeq)this.screenStarting = false;
     }
   }
 
@@ -554,6 +555,7 @@ class VoiceEngine {
 
   async stopScreenShare(): Promise<void> {
     const seq = ++this.screenSeq;
+    this.screenStarting=false;
     const room = this.room;
     const tracks = this.screenTracks;
     this.screenTracks = [];
@@ -643,7 +645,8 @@ class VoiceEngine {
     try {
       stream = await navigator.mediaDevices.getUserMedia({ audio: this.micConstraints(s) });
     } catch (err) {
-      if ((err as { name?: string }).name === 'OverconstrainedError' && s.inputDeviceId !== 'default') {
+      if(!current())return false;
+      if (['OverconstrainedError','NotFoundError'].includes((err as {name?:string}).name??'') && s.inputDeviceId !== 'default') {
         // Saved device was unplugged: fall back to the system default.
         this.prevSettings = { ...this.prevSettings, inputDeviceId: 'default' };
         settingsStore.set({ inputDeviceId: 'default' });
@@ -953,6 +956,8 @@ class VoiceEngine {
     ++this.micSeq;
     ++this.screenSeq;
     ++this.cameraSeq;
+    this.cameraStarting=false;
+    this.screenStarting=false;
     this.micStarting = null;
     if (this.rejoinTimer !== null) clearTimeout(this.rejoinTimer);
     this.rejoinTimer = null;

@@ -1,0 +1,57 @@
+✔ registration validates input and rejects duplicates (6220.769ms)
+✔ registration races keep field-specific duplicate errors (659.9024ms)
+{"t":"2026-10-15T21:28:37.457Z","level":"warn","msg":"email delivery postponed","mailId":"f1ab1f9e-0119-4a1b-a2c0-b820335e3730","attempt":1,"error":"SMTP is not configured"}
+✔ failed SMTP remains queued with bounded backoff rather than pretending delivery (30.9665ms)
+✔ email verification gates new users, resends with cooldown and safely consumes links (5496.9337ms)
+✔ login: wrong password, success, CSRF header required for cookie endpoints (2030.3934ms)
+✔ mail worker delivers current links and skips expired or superseded authentication mail (985.8353ms)
+✔ demo verification mailbox is disabled by default and isolates authenticated users (1305.6558ms)
+{"t":"2026-10-15T21:28:48.110Z","level":"warn","msg":"refresh token reuse detected; revoking family","userId":"573a705f-5f9b-4ea7-ba5a-02a7c5ba1374"}
+✔ refresh tokens rotate and reuse revokes the whole session family (1251.3753ms)
+✔ concurrent tabs receive the same rotated cookie; logout revokes retired access tokens too (1222.2219ms)
+✔ logout revokes the access token immediately (740.2108ms)
+✔ two-factor authentication: setup, login challenge, replay protection (5132.0298ms)
+✔ password reset: token is single-use and logs out other sessions (1994.8169ms)
+✔ concurrent password resets consume a link once and revoke pre-rotation tokens (1812.7012ms)
+✔ changing password revokes every token on other devices and keeps the current family (2624.6001ms)
+✔ server creation gives default roles and channels; non-members get 404 (1865.3025ms)
+✔ permissions: members cannot manage channels; owners can; changes broadcast (3155.0804ms)
+✔ invites: max uses and expiry are enforced; banned users cannot rejoin (2936.2852ms)
+✔ role hierarchy: a moderator cannot kick an admin or grant permissions they lack (3282.7382ms)
+✔ badges: only MANAGE_BADGES can create/grant; badges appear on profiles (1883.8212ms)
+✔ admin panel: only platform admins manage special badges; they show on profiles everywhere (5004.215ms)
+✔ messages: realtime delivery, edit/delete permissions, reactions, replies, mentions (4108.9158ms)
+✔ messages: XSS payloads are stored as text, non-members cannot read or post (2498.922ms)
+✔ slowmode is enforced for regular members (2722.4177ms)
+✔ pins, bookmarks, unread markers and full-text search with filters (2533.3922ms)
+✔ friends: request, accept, presence; blocking stops DMs (2889.9134ms)
+✔ uploads: content sniffing, size limit, access control by channel membership (4641.3857ms)
+✔ avatar upload is re-encoded and served as webp; bad profile colors are rejected (1114.7954ms)
+{"t":"2026-10-15T21:29:45.226Z","level":"warn","msg":"livekit moderation failed","err":{"name":"TypeError","message":"fetch failed","stack":"TypeError: fetch failed"}}
+✔ voice: tokens carry real grants; timeouts and server mute are enforced server-side (7797.0911ms)
+✔ gateway: accepts a heartbeat sent immediately after authentication (432.4863ms)
+✔ voice role restrictions survive moderation and prohibit screen audio without VIDEO (1763.2271ms)
+✔ gateway: rejects bad tokens, relays typing and DM call signalling (1350.0702ms)
+✔ rate limiting returns 429 with Retry-After (5097.1167ms)
+✔ mail validity migration preserves old token lifetimes and does not revive expired resets (792.2505ms)
+✔ SMTP accepts immediate and split multiline replies and encodes Cyrillic body (234.7087ms)
+✔ SMTP closed or rejected connection fails promptly instead of hanging or crashing (17.3242ms)
+✔ API test isolation checks the database name, not a password or hostname containing test (3.6346ms)
+✔ maintenance skips unavailable Redis without an unhandled rejection (4.8235ms)
+✔ jwt: roundtrip, tamper and expiry (1.3063ms)
+✔ password: scrypt hash verifies only the right password (919.9517ms)
+✔ totp: RFC 6238 test vector and drift window (32.8007ms)
+✔ color: contrast validation rejects unreadable gradients (1.0222ms)
+✔ upload sniffing: magic bytes beat the file name (22.1473ms)
+✔ search: tsquery builder strips operators (1.7422ms)
+✔ permissions: administrator implies all, names roundtrip (0.9534ms)
+✔ s3: SigV4 matches the AWS documented example (3.2493ms)
+✔ livekit: webhook signature is verified against the body hash (0.717ms)
+ℹ tests 46
+ℹ suites 0
+ℹ pass 46
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 114140.5985

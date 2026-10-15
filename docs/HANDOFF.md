@@ -1,5 +1,7 @@
 # Техническая передача: 12 октября 2026
 
+**Актуальное дополнение 16 октября:** исправления сессий, переподключения, захвата и прав медиа, миграция `004_mail_validity.sql`, результаты 46 backend / 40 frontend, браузерные проверки — в [VERIFICATION-2026-10-16.md](VERIFICATION-2026-10-16.md). Актуальные команды установки — в [QUICKSTART](../QUICKSTART.md). Ниже сохранён исторический снимок; адреса и состояние запущенных процессов относятся к дате отчёта.
+
 **Актуальное дополнение 13 октября:** см. `LAN.md` и `VERIFICATION-LAN.md`. Нативный Windows-стек дополнен Caddy 2.11.7 и HTTPS по Wi-Fi; проверены регистрация/вход, WSS-чат и медиапередача по сетевому адресу на той же машине. Физический второй клиент и правила firewall ещё не проверены: UAC и доверие CA были отменены. В demo mode собственная verification-ссылка доступна только после password login; для настоящего SMTP выключить DEMO_MAILBOX. Media cookie теперь проверяет действующую семейную сессию в PostgreSQL и перестаёт работать после logout/reset.
 
 ## Состояние
@@ -36,10 +38,10 @@ $env:EXPECT_VOICE='1'
 $env:AUDIT_DIR='test/results/layout'
 $env:SCREEN_DIR='test/results/screen'
 $env:MEDIA_DIR='test/results/media'
-pnpm test:e2e
-pnpm test:responsive
-pnpm test:screen
-pnpm test:media
+npm run test:e2e
+npm run test:responsive
+npm run test:screen
+npm run test:media
 ```
 
 Тесты медиа запускать последовательно, без параллельных тяжёлых процессов: два браузера, synthetic 1920×1080 canvas с временным кодом и отдельные тоны 220/880Hz для stereo. Рабочий стол/пользовательские файлы не захватываются. Замер картинки основан на закодированном времени и `requestVideoFrameCallback`; это не RTT, не задержка физического монитора и не measurement голоса mouth-to-ear.

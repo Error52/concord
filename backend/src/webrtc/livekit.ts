@@ -105,12 +105,16 @@ const PROTO_SOURCE: Record<TrackSourceGrant, string> = {
  * Applies server-side mute/deafen by changing the participant's permissions. Revoking the
  * microphone source makes the SFU unpublish the mic track, so the client cannot override it.
  */
-export async function applyModeration(room: string, identity: string, opts: { serverMute: boolean; serverDeaf: boolean; allowVideo: boolean }): Promise<void> {
+export function allowedPublishSources(opts:{serverMute:boolean;serverDeaf:boolean;allowVideo:boolean;allowSpeak:boolean}):TrackSourceGrant[] {
   const sources = ALL_SOURCES.filter((s) => {
-    if (s === 'microphone') return !opts.serverMute && !opts.serverDeaf;
-    if (s === 'camera' || s === 'screen_share') return opts.allowVideo;
-    return true;
+    if (s === 'microphone') return opts.allowSpeak && !opts.serverMute && !opts.serverDeaf;
+    return opts.allowVideo;
   });
+  return sources;
+}
+
+export async function applyModeration(room: string, identity: string, opts: { serverMute: boolean; serverDeaf: boolean; allowVideo: boolean; allowSpeak:boolean }): Promise<void> {
+  const sources=allowedPublishSources(opts);
   await twirp(
     'UpdateParticipant',
     {
@@ -118,7 +122,7 @@ export async function applyModeration(room: string, identity: string, opts: { se
       identity,
       permission: {
         canSubscribe: !opts.serverDeaf,
-        canPublish: true,
+        canPublish: sources.length>0,
         canPublishData: true,
         canPublishSources: sources.map((s) => PROTO_SOURCE[s]),
       },

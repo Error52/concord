@@ -1,0 +1,48 @@
+✔ concurrent expired requests share one refresh and retry with the new token (46.7112ms)
+✔ temporary refresh failures preserve the token and do not trigger logout (18.2718ms)
+✔ refresh retries a tab race; an actually expired session clears the token (139.0747ms)
+✔ late refresh responses cannot resurrect logout or replace a newer account (30.6678ms)
+✔ a request from a former account is not retried with another account credentials (15.7272ms)
+✔ aborting an upload while refresh is pending settles immediately and never resends (31.3177ms)
+✔ a newer refresh stays deduplicated when an older account refresh completes (29.9596ms)
+✔ network failure on a post-refresh retry keeps the normal NETWORK error (15.6266ms)
+✔ an upload response from a former account cannot refresh or return its attachment (16.316ms)
+✔ an expired upload refresh cannot sign out an account selected while it was pending (15.2551ms)
+✔ development server rejects malformed/traversing URLs and missing chunks without crashing (320.2977ms)
+✔ proxy preserves distinct LAN addresses behind a trusted local proxy and strips direct spoofing (345.0896ms)
+✔ gateway retries a transient refresh failure without losing the session (36.6975ms)
+✔ old socket callbacks cannot revoke a new connection or stop its heartbeats (1.2726ms)
+✔ missing heartbeat acknowledgement recovers a silent open socket (0.7481ms)
+✔ logout during refresh cannot revive the gateway or the old access token (0.8402ms)
+✔ repeated start is idempotent and offline/online creates one fresh connection (0.6116ms)
+✔ voice gets a higher fidelity mono budget and loss protection; shared audio stays raw stereo (1.5864ms)
+✔ receiver buffer leaves headroom for jitter without accumulating seconds of delay (0.6004ms)
+✔ buffer preference is optional and rejected/unsupported setters never break a call (0.5117ms)
+✔ joining and leaving streams cannot inflate bandwidth or packet-loss counters (3.7997ms)
+✔ publisher and subscriber transport IDs remain scoped to their peer connection (0.5302ms)
+✔ auto respects small CPUs and keeps the high quality ceiling on capable machines (2.3578ms)
+✔ CPU pressure lowers frame rate before resolution, text retains sharpness (0.4164ms)
+✔ stream controller resists brief pressure, backs off and recovers gradually (0.5454ms)
+✔ stream controller uses encoder time, ignores audio, tolerates missing stats and bounds its tier (0.5119ms)
+✔ bandwidth startup does not masquerade as CPU overload or erase screen detail (1.5697ms)
+✔ screen codec falls back on browsers without H.264 (0.578ms)
+✔ stats: RTT, transport and codec come from the selected candidate pair and codec stats (3.6747ms)
+✔ stats: bitrates and packet loss are computed from deltas between samples (107.7889ms)
+✔ stats: playout buffers use interval deltas, tolerate counter reset and missing fields (1.0324ms)
+✔ stats: relay candidates are labelled as TURN; quality thresholds (0.3393ms)
+✔ VAD: opens on speech, holds through short gaps, closes after hangover (0.2992ms)
+✔ VAD: auto threshold follows the noise floor (0.3133ms)
+✔ audio level helpers (0.138ms)
+✔ message ids compare as big integers (0.197ms)
+✔ contrast validation mirrors the backend rule (0.3171ms)
+✔ router parses and builds paths (0.9972ms)
+✔ formatting helpers (0.6432ms)
+✔ permission helper treats ADMINISTRATOR as all permissions (0.1774ms)
+ℹ tests 40
+ℹ suites 0
+ℹ pass 40
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 1001.7757
