@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { LuAtSign, LuHash, LuMenu, LuPhone, LuPin, LuSearch, LuUsers, LuVideo } from 'react-icons/lu';
 import { api } from '../../api/client';
@@ -96,10 +96,11 @@ export function ChatView({ channelId, serverId, jumpTo }: { channelId: string; s
   const [drag, setDrag] = useState(0);
   const [pins, setPins] = useState<DOMRect | null>(null);
   const composer = useRef<ComposerHandle>(null);
+  const closeThread=useCallback(()=>uiStore.set({threadOf:null}),[]);
 
   useEffect(() => {
-    if (document.hasFocus()) void markRead(channelId);
-  }, [channelId]);
+    if (!jumpTo&&document.hasFocus()) void markRead(channelId);
+  }, [channelId,jumpTo]);
 
   if (!channel) {
     return (
@@ -213,7 +214,7 @@ export function ChatView({ channelId, serverId, jumpTo }: { channelId: string; s
           )}
         </div>
         {thread && (
-          <ThreadPanel channelId={channelId} serverId={serverId} messageId={thread} onClose={() => uiStore.set({ threadOf: null })} />
+          <ThreadPanel key={thread} channelId={channelId} serverId={serverId} messageId={thread} onClose={closeThread} />
         )}
       </div>
       {pins && <PinsPopover channelId={channelId} anchor={pins} onClose={() => setPins(null)} />}

@@ -22,6 +22,8 @@ export interface ChannelMessages {
   /** false when the window was loaded "around" an old message and newer ones aren't loaded yet */
   atLatest: boolean;
   loading: boolean;
+  loadId?: number;
+  loadFailed?: boolean;
 }
 
 export interface AppState {

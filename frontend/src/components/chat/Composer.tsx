@@ -43,6 +43,11 @@ export const Composer = forwardRef<ComposerHandle, Props>(function Composer({ ch
   const [picker, setPicker] = useState<PickerTab | null>(null);
   const [suggest, setSuggest] = useState<{ query: string; start: number; index: number } | null>(null);
   const [cooldown, setCooldown] = useState(0);
+  const [sending,setSending]=useState(false);
+  const sendingRef=useRef(false);
+  const active=useRef(false);
+  const resources=useRef(new Map<string,Upload>());
+  const accountId=useApp(s=>s.me?.id??'guest');
   const mentionMap = useRef(new Map<string, string>());
   const taRef = useRef<HTMLTextAreaElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
@@ -60,10 +65,20 @@ export const Composer = forwardRef<ComposerHandle, Props>(function Composer({ ch
   const bypassSlowmode = serverId ? can(perms, Perm.MANAGE_MESSAGES) || can(perms, Perm.MANAGE_CHANNELS) : true;
 
   // Draft per channel survives navigation.
-  const draftKey = `${channelId}:${fixedReplyTo ?? ''}`;
+  const draftKey = `${accountId}:${channelId}:${fixedReplyTo ?? ''}`;
+  const releaseUpload=(key:string)=>{
+    const upload=resources.current.get(key);if(!upload)return;
+    resources.current.delete(key);upload.handle?.abort();
+    if(upload.preview)URL.revokeObjectURL(upload.preview);
+  };
   useEffect(() => {
+    active.current=true;
     setText(drafts.get(draftKey) ?? '');
     setUploads([]);
+    return ()=>{
+      active.current=false;
+      for(const key of resources.current.keys())releaseUpload(key);
+    };
   }, [draftKey]);
   useEffect(() => {
     drafts.set(draftKey, text);
@@ -94,12 +109,13 @@ export const Composer = forwardRef<ComposerHandle, Props>(function Composer({ ch
         continue;
       }
       const u: Upload = { key, file, preview: file.type.startsWith('image/') ? URL.createObjectURL(file) : null, progress: 0, result: null, error: null, handle: null };
-      const handle = uploadWithProgress<Attachment>(`/channels/${channelId}/attachments`, file, (p) => setUploads((list) => list.map((x) => (x.key === key ? { ...x, progress: p } : x))));
+      resources.current.set(key,u);
+      const handle = uploadWithProgress<Attachment>(`/channels/${channelId}/attachments`, file, (p) => active.current&&setUploads((list) => list.map((x) => (x.key === key ? { ...x, progress: p } : x))));
       u.handle = handle;
       handle.promise.then(
-        (result) => setUploads((list) => list.map((x) => (x.key === key ? { ...x, result, progress: 1 } : x))),
+        (result) => active.current&&resources.current.has(key)&&setUploads((list) => list.map((x) => (x.key === key ? { ...x, result, progress: 1 } : x))),
         (err) => {
-          if ((err as { code?: string }).code === 'ABORTED') return;
+          if (!active.current||!resources.current.has(key)||(err as { code?: string }).code === 'ABORTED') return;
           setUploads((list) => list.map((x) => (x.key === key ? { ...x, error: errorMessage(err, 'Ошибка загрузки') } : x)));
         },
       );
@@ -147,6 +163,7 @@ export const Composer = forwardRef<ComposerHandle, Props>(function Composer({ ch
     });
 
   const submit = async (gif?: Gif) => {
+    if(sendingRef.current)return;
     if (!canSend || timedOut) return;
     if (cooldown > 0) return;
     const pending = uploads.some((u) => !u.result && !u.error);
@@ -154,17 +171,22 @@ export const Composer = forwardRef<ComposerHandle, Props>(function Composer({ ch
     const attachmentIds = uploads.filter((u) => u.result).map((u) => u.result!.id);
     const content = gif ? '' : encodeMentions(text.trim());
     if (!content && attachmentIds.length === 0 && !gif) return;
-    setText('');
-    setUploads([]);
-    uiStore.set((s) => ({ replyTo: { ...s.replyTo, [channelId]: null } }));
+    const original=text,keys=new Set(uploads.filter(u=>u.result).map(u=>u.key));
+    sendingRef.current=true;setSending(true);setText('');drafts.set(draftKey,'');
     const ok = await sendMessage(channelId, {
       content,
       replyToId: replyId,
       attachmentIds,
       gif: gif ? { url: gif.url, previewUrl: gif.previewUrl, width: gif.width, height: gif.height, title: gif.title } : null,
     });
-    if (!ok && content) setText(text);
-    else if (slowmode && !bypassSlowmode) setCooldown(slowmode);
+    sendingRef.current=false;
+    if(!active.current){if(!ok&&original&&!drafts.get(draftKey))drafts.set(draftKey,original);return;}
+    setSending(false);
+    if(!ok){if(original)setText(current=>current||original);return;}
+    for(const key of keys)releaseUpload(key);
+    setUploads(list=>list.filter(u=>!keys.has(u.key)));
+    if(!fixedReplyTo)uiStore.set(s=>s.replyTo[channelId]===replyId?{replyTo:{...s.replyTo,[channelId]:null}}:{});
+    if (slowmode && !bypassSlowmode) setCooldown(slowmode);
   };
 
   const onKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
@@ -283,7 +305,7 @@ export const Composer = forwardRef<ComposerHandle, Props>(function Composer({ ch
                   className="icon-btn"
                   aria-label="Убрать файл"
                   onClick={() => {
-                    u.handle?.abort();
+                    releaseUpload(u.key);
                     setUploads((list) => list.filter((x) => x.key !== u.key));
                   }}
                 >
@@ -336,7 +358,7 @@ export const Composer = forwardRef<ComposerHandle, Props>(function Composer({ ch
             <LuSmile />
           </button>
           {(text.trim() || uploads.length > 0) && (
-            <button className="icon-btn" onClick={() => void submit()} aria-label="Отправить" style={{ color: 'var(--accent)' }}>
+            <button className="icon-btn" disabled={sending} onClick={() => void submit()} aria-label="Отправить" style={{ color: 'var(--accent)' }}>
               <LuSend />
             </button>
           )}

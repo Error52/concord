@@ -2,6 +2,8 @@ import { useCallback, useEffect, useState } from 'react';
 import { LuMessagesSquare, LuX } from 'react-icons/lu';
 import { api, errorMessage } from '../../api/client';
 import { gateway } from '../../state/actions';
+import {getState} from '../../state/app';
+import {messageForViewer,withReaction,type ReactionUpdate} from '../../utils/reactions';
 import { toast } from '../../state/ui';
 import { MessageItem, canManageIn } from './MessageItem';
 import { Composer } from './Composer';
@@ -25,8 +27,12 @@ export function ThreadPanel({ channelId, serverId, messageId, onClose }: { chann
       if (m.replyTo?.id === messageId) setData((d) => (d && !d.replies.some((r) => r.id === m.id) ? { ...d, replies: [...d.replies, m] } : d));
     });
     const offUpd = gateway.on('message:update', (m: Message) =>
-      setData((d) => d && { parent: d.parent.id === m.id ? m : d.parent, replies: d.replies.map((r) => (r.id === m.id ? m : r)) }),
+      setData((d) => d && { parent: d.parent.id === m.id ? messageForViewer(m,getState().me?.id??'',d.parent) : d.parent, replies: d.replies.map((r) => (r.id === m.id ? messageForViewer(m,getState().me?.id??'',r) : r)) }),
     );
+    const offReaction=gateway.on('reaction:update',(update:ReactionUpdate)=>setData(d=>{
+      if(!d)return d;const apply=(m:Message)=>m.id===update.messageId?withReaction(m,update,getState().me?.id??''):m;
+      return {parent:apply(d.parent),replies:d.replies.map(apply)};
+    }));
     const offDel = gateway.on('message:delete', (x: { id: string }) => {
       if (x.id === messageId) onClose();
       setData((d) => d && { ...d, replies: d.replies.filter((r) => r.id !== x.id) });
@@ -35,6 +41,7 @@ export function ThreadPanel({ channelId, serverId, messageId, onClose }: { chann
       offNew();
       offUpd();
       offDel();
+      offReaction();
     };
   }, [messageId, load, onClose]);
 

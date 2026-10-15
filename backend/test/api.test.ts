@@ -12,6 +12,9 @@ import {captureSmtp} from './smtpCapture.js';
 import {createServer} from 'node:http';
 import {markJoined,markLeft} from '../src/services/voiceService.js';
 import {Perm} from '../src/models/permissions.js';
+import {pendingRings} from '../src/services/callService.js';
+import {redis} from '../src/redis.js';
+import {react} from '../src/services/messageService.js';
 
 let h: Harness;
 const c = (): Client => new Client(h.base);
@@ -415,6 +418,7 @@ test('messages: realtime delivery, edit/delete permissions, reactions, replies, 
   assert.equal((await owner.put(`/api/messages/${sent.body.id}/reactions/${encodeURIComponent('🔥')}`)).status, 204);
   const reaction = await gwOwner.waitFor('reaction:update');
   assert.equal(reaction.count, 1);
+  assert.equal(reaction.actorId,owner.user.id);assert.equal(reaction.actorHasReaction,true);
 
   // Member cannot delete the owner's message.
   assert.equal((await member.del(`/api/messages/${reply.body.id}`)).status, 403);
@@ -434,6 +438,40 @@ test('messages: XSS payloads are stored as text, non-members cannot read or post
   const outsider = await c().register('outsider2');
   assert.equal((await outsider.get(`/api/channels/${general.id}/messages`)).status, 404);
   assert.equal((await outsider.post(`/api/channels/${general.id}/messages`, { content: 'x' })).status, 404);
+});
+
+test('the twenty-emoji limit still allows joining an existing reaction',async()=>{
+ const {owner,member,general}=await serverWithMember();
+ const sent=await owner.post(`/api/channels/${general.id}/messages`,{content:'reaction limit'});
+ const added=await Promise.allSettled(Array.from({length:21},(_,i)=>react(sent.body.id,owner.user.id,`r${i}`,true)));
+ assert.equal(added.filter(r=>r.status==='fulfilled').length,20);assert.equal(added.filter(r=>r.status==='rejected').length,1);
+ const existing=(await pool.query(`SELECT emoji FROM message_reactions WHERE message_id=$1 LIMIT 1`,[sent.body.id])).rows[0].emoji;
+ assert.equal((await member.put(`/api/messages/${sent.body.id}/reactions/${existing}`)).status,204);
+ assert.equal((await member.put(`/api/messages/${sent.body.id}/reactions/extra`)).status,400);
+});
+
+test('read acknowledgements preserve later mentions, emit the stored marker and clamp future ids',async()=>{
+ const {owner,member,general}=await serverWithMember();
+ const first=await member.post(`/api/channels/${general.id}/messages`,{content:`first <@${owner.user.id}>`});
+ const second=await member.post(`/api/channels/${general.id}/messages`,{content:`second <@${owner.user.id}>`});
+ const gw=await connectGateway(h.base,owner.token!);
+ const stored=async()=> (await pool.query(`SELECT last_read_id,mention_count FROM read_states WHERE user_id=$1 AND channel_id=$2`,[owner.user.id,general.id])).rows[0];
+ try{
+  await owner.post(`/api/channels/${general.id}/read`,{messageId:first.body.id});
+  assert.equal((await stored()).mention_count,1);
+  await owner.post(`/api/channels/${general.id}/read`,{messageId:second.body.id});
+  const third=await member.post(`/api/channels/${general.id}/messages`,{content:`third <@${owner.user.id}>`});
+  gw.events.splice(0);await owner.post(`/api/channels/${general.id}/read`,{messageId:first.body.id});
+  const live=await gw.waitFor('read:update');assert.equal(live.lastReadId,second.body.id);assert.equal(live.mentionCount,1);
+  assert.deepEqual(await stored(),{last_read_id:second.body.id,mention_count:1});
+  await owner.post(`/api/channels/${general.id}/unread`,{messageId:second.body.id});assert.equal((await stored()).mention_count,2);
+  const unread=await gw.waitFor('read:update',d=>d.lastReadId===(BigInt(second.body.id)-1n).toString());assert.equal(unread.mentionCount,2);
+  await owner.post(`/api/channels/${general.id}/read`,{messageId:'9000000000000000000'});assert.equal((await stored()).last_read_id,third.body.id);
+  const everyone=await owner.post(`/api/channels/${general.id}/messages`,{content:`@everyone and <@${member.user.id}>`});assert.equal(everyone.status,201);
+  const recipient=async()=>(await pool.query(`SELECT mention_count FROM read_states WHERE user_id=$1 AND channel_id=$2`,[member.user.id,general.id])).rows[0].mention_count;
+  assert.equal(await recipient(),1,'explicit mention plus everyone counts once in the same transaction');
+  await member.post(`/api/channels/${general.id}/read`,{messageId:everyone.body.id});assert.equal(await recipient(),0);
+ }finally{gw.close();}
 });
 
 test('slowmode is enforced for regular members', async () => {
@@ -690,6 +728,26 @@ test('gateway: rejects bad tokens, relays typing and DM call signalling', async 
   assert.equal(missed.content, 'call:missed');
   gwA.close();
   gwB.close();
+});
+
+test('blocked DM participants cannot ring in either direction or restore a stale ring',async()=>{
+ const a=await c().register('blocked_caller'),b=await c().register('blocked_callee');
+ const dm=await a.post('/api/dm',{recipientId:b.user.id});assert.equal(dm.status,200);
+ const ga=await connectGateway(h.base,a.token!),gb=await connectGateway(h.base,b.token!);
+ try{
+  assert.equal((await b.put(`/api/blocks/${a.user.id}`)).status,200);
+  for(const caller of [ga,gb]){
+   caller.send('call:ring',{channelId:dm.body.id,video:false});
+   const error=await caller.waitFor('error',d=>d.op==='call:ring');assert.equal(error.code,'FORBIDDEN');
+  }
+  assert.equal(await redis.get(`call:ring:${dm.body.id}`),null);
+  assert.equal((await b.get('/api/notifications')).body.items.filter((n:any)=>n.type==='call').length,0);
+  await redis.set(`call:ring:${dm.body.id}`,JSON.stringify({callerId:a.user.id,video:false,startedAt:new Date().toISOString()}),'EX',45);
+  assert.deepEqual(await pendingRings(b.user.id,[dm.body.id]),[]);
+  await redis.del(`call:ring:${dm.body.id}`);
+  assert.equal((await b.del(`/api/blocks/${a.user.id}`)).status,200);
+  ga.send('call:ring',{channelId:dm.body.id,video:true});await gb.waitFor('call:incoming');
+ }finally{ga.close();gb.close();}
 });
 
 test('rate limiting returns 429 with Retry-After', async () => {

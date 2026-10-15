@@ -7,6 +7,7 @@ import { Ev } from '../websocket/events.js';
 import { notify } from './notificationService.js';
 import { postSystem } from './messageService.js';
 import { statesForChannels } from './voiceService.js';
+import { queryOne } from '../db/pool.js';
 
 /**
  * DM call signalling. Media goes through the SFU room of the DM channel; this only rings the
@@ -28,8 +29,15 @@ async function dmPeers(channelId: string, userId: string): Promise<string[]> {
   return ca.dmPeers;
 }
 
+async function isBlocked(userId:string,peers:string[]):Promise<boolean>{
+  return !!await queryOne(`SELECT 1 FROM blocks WHERE
+    (blocker_id=$1 AND blocked_id=ANY($2::uuid[])) OR (blocked_id=$1 AND blocker_id=ANY($2::uuid[]))`,
+    [userId,peers.filter(id=>id!==userId)]);
+}
+
 export async function ring(channelId: string, userId: string, video: boolean): Promise<void> {
   const peers = await dmPeers(channelId, userId);
+  if(await isBlocked(userId,peers))throw Errors.forbidden('Звонок недоступен');
   const ring: Ring = { callerId: userId, video, startedAt: new Date().toISOString() };
   await redis.set(ringKey(channelId), JSON.stringify(ring), 'EX', RING_TTL);
   const caller = await loadPublicUser(userId);
@@ -40,6 +48,7 @@ export async function ring(channelId: string, userId: string, video: boolean): P
 
 export async function accept(channelId: string, userId: string): Promise<void> {
   const peers = await dmPeers(channelId, userId);
+  if(await isBlocked(userId,peers))throw Errors.forbidden('Звонок недоступен');
   await redis.del(ringKey(channelId));
   await emit(Ev.CallAccepted, { channelId, userId }, { users: peers });
 }
@@ -75,6 +84,7 @@ export async function pendingRings(userId: string, channelIds: string[]) {
     if (!raw) continue;
     const r = JSON.parse(raw) as Ring;
     if (r.callerId === userId) continue;
+    if(await isBlocked(userId,[r.callerId]))continue;
     out.push({ channelId, caller: await loadPublicUser(r.callerId), video: r.video });
   }
   return out;

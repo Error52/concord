@@ -134,6 +134,20 @@ try {
     await A.page.screenshot({ path: `${SHOTS}/03-chat.png` });
   });
 
+  await step('editing keeps reactions personal and threads receive reaction updates',async()=>{
+    const bmsg=B.page.locator('.msg',{hasText:'console.log(42)'});await bmsg.hover();
+    await bmsg.getByRole('button',{name:'Редактировать',exact:true}).click();
+    await B.page.locator('.msg .composer textarea').fill('```js\nconsole.log(43)\n```');await B.page.locator('.msg .composer textarea').press('Enter');
+    const amsg=A.page.locator('.msg',{hasText:'console.log(43)'});await amsg.waitFor();
+    await A.page.waitForFunction(()=>[...document.querySelectorAll('.msg')].find(e=>e.textContent.includes('console.log(43)'))?.querySelector('.reaction.me'));
+    assert.equal(await B.page.locator('.msg',{hasText:'console.log(43)'}).locator('.reaction.me').count(),0);
+    await B.page.locator('.msg',{hasText:'console.log(43)'}).click({button:'right'});await B.page.getByRole('menuitem',{name:'Открыть ветку',exact:true}).click();
+    const thread=B.page.locator('.thread-panel');await thread.locator('.reaction',{hasText:'👍'}).waitFor();
+    await amsg.locator('.reaction',{hasText:'👍'}).click();await thread.locator('.reaction',{hasText:'👍'}).waitFor({state:'detached'});
+    await amsg.hover();await amsg.getByRole('button',{name:'Реакция 👍',exact:true}).click();await thread.locator('.reaction',{hasText:'👍'}).waitFor();
+    assert.equal(await thread.locator('.reaction.me').count(),0);await B.page.getByRole('button',{name:'Закрыть ветку',exact:true}).click();
+  });
+
   await step('edit and delete own message', async () => {
     const box = A.page.getByRole('textbox', { name: 'Написать в #general' });
     await box.fill('опечатка');

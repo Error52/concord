@@ -95,6 +95,9 @@ export async function create(channelId: string, userId: string, input: CreateInp
     mentionIds = [...new Set(requested)].filter((id) => set.has(id) && id !== userId);
   }
   const mentionsEveryone = /(^|\s)@(everyone|here)\b/.test(content) && !!ca.access && has(ca.access.perms, Perm.MENTION_EVERYONE);
+  const mentionedUsers=mentionsEveryone
+    ? [...new Set([...mentionIds,...(await memberIds(ca.channel.server_id!)).filter(id=>id!==userId)])]
+    : mentionIds;
 
   if (input.replyToId) {
     const parent = await queryOne(`SELECT 1 FROM messages WHERE id = $1 AND channel_id = $2`, [input.replyToId, channelId]);
@@ -142,11 +145,11 @@ export async function create(channelId: string, userId: string, input: CreateInp
       [userId, channelId, id],
       db,
     );
-    if (mentionIds.length) {
+    if (mentionedUsers.length) {
       await execute(
         `INSERT INTO read_states (user_id, channel_id, mention_count) SELECT unnest($1::uuid[]), $2, 1
          ON CONFLICT (user_id, channel_id) DO UPDATE SET mention_count = read_states.mention_count + 1`,
-        [mentionIds, channelId],
+        [mentionedUsers, channelId],
         db,
       );
     }
@@ -177,11 +180,6 @@ async function fanOutNotifications(ca: ChannelAccess, authorId: string, msg: Mes
   if (mentionIds.length) await notify(mentionIds, 'mention', preview);
   if (everyone) {
     const all = (await memberIds(ca.channel.server_id)).filter((id) => id !== authorId && !mentionIds.includes(id));
-    await execute(
-      `INSERT INTO read_states (user_id, channel_id, mention_count) SELECT unnest($1::uuid[]), $2, 1
-       ON CONFLICT (user_id, channel_id) DO UPDATE SET mention_count = read_states.mention_count + 1`,
-      [all, ca.channel.id],
-    );
     await notify(all, 'everyone', preview);
   }
 }
@@ -248,18 +246,25 @@ export async function react(messageId: string, userId: string, emoji: string, on
   if (on) {
     assertPerm(ca, Perm.ADD_REACTIONS, 'Нет права добавлять реакции');
     await assertNotBlocked(ca, userId);
-    const distinct = await queryOne<{ n: number }>(`SELECT count(DISTINCT emoji)::int AS n FROM message_reactions WHERE message_id = $1`, [messageId]);
-    if ((distinct?.n ?? 0) >= 20) throw Errors.badRequest('Слишком много разных реакций');
-    await execute(`INSERT INTO message_reactions (message_id, user_id, emoji) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING`, [messageId, userId, emoji]);
+  }
+  const userIds=await tx(async db=>{
+    // Serialize changes to one message so concurrent new emoji cannot exceed the limit.
+    if(!await queryOne(`SELECT id FROM messages WHERE id=$1 FOR UPDATE`,[messageId],db))throw Errors.notFound('Сообщение');
+    if(on){
+    const distinct = await queryOne<{ n: number; existing:boolean }>(`SELECT count(DISTINCT emoji)::int AS n,coalesce(bool_or(emoji=$2),false) AS existing FROM message_reactions WHERE message_id = $1`, [messageId,emoji],db);
+    if ((distinct?.n ?? 0) >= 20&&!distinct?.existing) throw Errors.badRequest('Слишком много разных реакций');
+    await execute(`INSERT INTO message_reactions (message_id, user_id, emoji) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING`, [messageId, userId, emoji],db);
   } else {
-    await execute(`DELETE FROM message_reactions WHERE message_id = $1 AND user_id = $2 AND emoji = $3`, [messageId, userId, emoji]);
+    await execute(`DELETE FROM message_reactions WHERE message_id = $1 AND user_id = $2 AND emoji = $3`, [messageId, userId, emoji],db);
   }
   const rows = await query<{ user_ids: string[] }>(
     `SELECT array_agg(user_id ORDER BY created_at) AS user_ids FROM message_reactions WHERE message_id = $1 AND emoji = $2`,
     [messageId, emoji],
+    db,
   );
-  const userIds = rows[0]?.user_ids ?? [];
-  await emit(Ev.ReactionUpdate, { messageId, channelId: msg.channel_id, emoji, userIds: userIds.slice(0, 20), count: userIds.length }, targetOf(ca));
+    return rows[0]?.user_ids??[];
+  });
+  await emit(Ev.ReactionUpdate, { messageId, channelId: msg.channel_id, emoji, userIds: userIds.slice(0, 20), count: userIds.length,actorId:userId,actorHasReaction:userIds.includes(userId) }, targetOf(ca));
 }
 
 export async function setPinned(messageId: string, userId: string, pinned: boolean): Promise<MessageDTO> {
@@ -291,24 +296,31 @@ export async function pins(channelId: string, userId: string): Promise<MessageDT
 
 export async function markRead(channelId: string, userId: string, messageId: string): Promise<void> {
   await requireChannel(channelId, userId);
-  await execute(
-    `INSERT INTO read_states (user_id, channel_id, last_read_id, mention_count) VALUES ($1, $2, $3, 0)
-     ON CONFLICT (user_id, channel_id) DO UPDATE SET last_read_id = GREATEST(read_states.last_read_id, EXCLUDED.last_read_id), mention_count = 0`,
-    [userId, channelId, messageId],
-  );
-  await emit(Ev.ReadState, { channelId, lastReadId: messageId, mentionCount: 0 }, { users: [userId] });
+  const state=await updateReadMarker(channelId,userId,messageId,false);
+  await emit(Ev.ReadState, state, { users: [userId] });
 }
 
 /** "Mark unread": moves the read marker to just before the given message. */
 export async function markUnread(channelId: string, userId: string, messageId: string): Promise<void> {
   await requireChannel(channelId, userId);
-  const prev = (BigInt(messageId) - 1n).toString();
-  await execute(
-    `INSERT INTO read_states (user_id, channel_id, last_read_id) VALUES ($1, $2, $3)
-     ON CONFLICT (user_id, channel_id) DO UPDATE SET last_read_id = EXCLUDED.last_read_id`,
-    [userId, channelId, prev],
-  );
-  await emit(Ev.ReadState, { channelId, lastReadId: prev, mentionCount: 0 }, { users: [userId] });
+  const state=await updateReadMarker(channelId,userId,messageId,true);
+  await emit(Ev.ReadState, state, { users: [userId] });
+}
+
+async function updateReadMarker(channelId:string,userId:string,messageId:string,unread:boolean){
+  return tx(async db=>{
+    await execute(`INSERT INTO read_states (user_id,channel_id) VALUES ($1,$2) ON CONFLICT DO NOTHING`,[userId,channelId],db);
+    const row=await queryOne<{last_read_id:string|null}>(`SELECT last_read_id FROM read_states WHERE user_id=$1 AND channel_id=$2 FOR UPDATE`,[userId,channelId],db);
+    // Count after obtaining the row lock so concurrent message inserts cannot lose their increments.
+    const latest=await queryOne<{id:string}>(`SELECT coalesce(max(id),0)::text AS id FROM messages WHERE channel_id=$1`,[channelId],db);
+    const cap=BigInt(latest!.id),requested=BigInt(messageId)-(unread?1n:0n),previous=BigInt(row!.last_read_id??'0');
+    let marker=unread?requested:(requested>previous?requested:previous);
+    if(marker<0n)marker=0n;if(marker>cap)marker=cap;
+    const count=await queryOne<{n:number}>(`SELECT count(*)::int AS n FROM messages WHERE channel_id=$1 AND id>$3
+      AND author_id IS DISTINCT FROM $2::uuid AND ($2::uuid=ANY(mention_ids) OR mentions_everyone)`,[channelId,userId,marker.toString()],db);
+    await execute(`UPDATE read_states SET last_read_id=$3,mention_count=$4 WHERE user_id=$1 AND channel_id=$2`,[userId,channelId,marker.toString(),count!.n],db);
+    return {channelId,lastReadId:marker.toString(),mentionCount:count!.n};
+  });
 }
 
 export async function readStates(userId: string) {

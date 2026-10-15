@@ -5,6 +5,7 @@ import { navigate, routerStore } from './router';
 import { toast, uiStore } from './ui';
 import { settingsStore } from './settings';
 import { cmpId, isNewer } from '../utils/ids';
+import {messageForViewer,withReaction,type ReactionUpdate} from '../utils/reactions';
 import { notifySound, showDesktopNotification } from '../utils/notify';
 import type {
   Channel,
@@ -128,18 +129,21 @@ function upsertMessage(list: ChannelMessages | undefined, m: Message): ChannelMe
 }
 
 function onMessageNew(m: Message): void {
+  recordMessageChange(m.channelId,m.id,()=>({...m,pending:false}),{...m,pending:false});
   const s = getState();
   const mine = m.author?.id === s.me?.id;
   setState((st) => {
     const ch = st.channels[m.channelId];
-    const readStates = mine ? { ...st.readStates, [m.channelId]: { channelId: m.channelId, lastReadId: m.id, mentionCount: 0 } } : st.readStates;
+    const previousRead=st.readStates[m.channelId];
+    const readStates = mine && (!previousRead || isNewer(m.id,previousRead.lastReadId)) ? { ...st.readStates, [m.channelId]: { channelId: m.channelId, lastReadId: m.id, mentionCount: 0 } } : st.readStates;
     const mentioned = !mine && (m.mentionIds.includes(st.me?.id ?? '') || m.mentionsEveryone);
     const rs = readStates[m.channelId];
     const nextRead = mentioned ? { ...readStates, [m.channelId]: { channelId: m.channelId, lastReadId: rs?.lastReadId ?? '0', mentionCount: (rs?.mentionCount ?? 0) + 1 } } : readStates;
-    const dms = st.dms[m.channelId] ? { ...st.dms, [m.channelId]: { ...st.dms[m.channelId]!, lastMessageId: m.id } } : st.dms;
+    const lastMessageId=ch?.lastMessageId&&isNewer(ch.lastMessageId,m.id)?ch.lastMessageId:m.id;
+    const dms = st.dms[m.channelId] ? { ...st.dms, [m.channelId]: { ...st.dms[m.channelId]!, lastMessageId } } : st.dms;
     const typing = st.typing[m.channelId] && m.author ? { ...st.typing, [m.channelId]: Object.fromEntries(Object.entries(st.typing[m.channelId]!).filter(([u]) => u !== m.author!.id)) } : st.typing;
     return {
-      channels: ch ? { ...st.channels, [m.channelId]: { ...ch, lastMessageId: m.id } } : st.channels,
+      channels: ch ? { ...st.channels, [m.channelId]: { ...ch, lastMessageId } } : st.channels,
       messages: { ...st.messages, [m.channelId]: upsertMessage(st.messages[m.channelId], m)! },
       readStates: nextRead,
       dms,
@@ -148,7 +152,6 @@ function onMessageNew(m: Message): void {
     };
   });
   if (!getState().dms[m.channelId] && !m.serverId) void loadDm(m.channelId);
-  if (isViewing(m.channelId) && document.visibilityState === 'visible' && !mine) void markRead(m.channelId, m.id);
 }
 
 export function isViewing(channelId: string): boolean {
@@ -174,6 +177,7 @@ function onDmCreate(dm: Dm): void {
 }
 
 function patchMessage(channelId: string, id: string, fn: (m: Message) => Message | null): void {
+  recordMessageChange(channelId,id,fn);
   setState((s) => {
     const list = s.messages[channelId];
     if (!list) return {};
@@ -235,18 +239,12 @@ const typingTimers = new Map<string, number>();
 gateway.on('ready', onReady);
 gateway.on('message:new', onMessageNew);
 gateway.on('message:update', (m: Message) => {
-  patchMessage(m.channelId, m.id, () => m);
+  patchMessage(m.channelId, m.id, previous=>messageForViewer(m,getState().me?.id??'',previous));
 });
 gateway.on('message:delete', (d: { id: string; channelId: string }) => patchMessage(d.channelId, d.id, () => null));
-gateway.on('reaction:update', (d: { messageId: string; channelId: string; emoji: string; userIds: string[]; count: number }) => {
+gateway.on('reaction:update', (d: ReactionUpdate) => {
   const me = getState().me?.id ?? '';
-  patchMessage(d.channelId, d.messageId, (m) => {
-    const others = m.reactions.filter((r) => r.emoji !== d.emoji);
-    const existing = m.reactions.find((r) => r.emoji === d.emoji);
-    if (d.count === 0) return { ...m, reactions: others };
-    const updated = { emoji: d.emoji, count: d.count, userIds: d.userIds, me: d.userIds.includes(me) || (d.count > 20 && !!existing?.me) };
-    return { ...m, reactions: existing ? m.reactions.map((r) => (r.emoji === d.emoji ? updated : r)) : [...others, updated] };
-  });
+  patchMessage(d.channelId, d.messageId, m=>withReaction(m,d,me));
 });
 gateway.on('typing:start', (d: { channelId: string; userId: string; username: string }) => {
   setState((s) => ({ typing: { ...s.typing, [d.channelId]: { ...s.typing[d.channelId], [d.userId]: { name: d.username, until: Date.now() + 8000 } } } }));
@@ -413,25 +411,64 @@ async function logoutLocal(message: string | null): Promise<void> {
 // ───────────────────────────── messages ─────────────────────────────
 
 const PAGE = 50;
+let messageLoadId=0;
+type MessageChange={id:string;apply:(m:Message)=>Message|null;append?:Message};
+const messageLoads=new Map<string,{id:number;changes:MessageChange[]}>();
+
+function recordMessageChange(channelId:string,id:string,apply:(m:Message)=>Message|null,append?:Message):void {
+  const load=messageLoads.get(channelId);
+  if(load)load.changes.push({id,apply,append});
+}
+function mergeMessages(...groups:Message[][]):Message[] {
+  const byId=new Map<string,Message>();
+  for(const items of groups)for(const m of items){
+    if(!m.pending&&m.nonce)for(const [id,old] of byId)if(old.pending&&old.nonce===m.nonce&&old.author?.id===m.author?.id)byId.delete(id);
+    byId.set(m.id,m);
+  }
+  return [...byId.values()].sort((a,b)=>{
+    const ap=a.id.startsWith('pending-'),bp=b.id.startsWith('pending-');
+    return ap&&bp?0:ap?1:bp?-1:cmpId(a.id,b.id);
+  });
+}
+function beginMessageLoad(channelId:string,list:ChannelMessages):number {
+  const id=++messageLoadId;messageLoads.set(channelId,{id,changes:[]});
+  setState((s)=>({messages:{...s.messages,[channelId]:{...list,loading:true,loadFailed:false,loadId:id}}}));
+  return id;
+}
+function ownsMessageLoad(channelId:string,id:number):boolean{return getState().messages[channelId]?.loadId===id;}
+function applyMessageChanges(channelId:string,items:Message[],append:boolean):Message[] {
+  const byId=new Map(items.map(m=>[m.id,m]));
+  for(const change of messageLoads.get(channelId)?.changes??[]){
+    const previous=byId.get(change.id);
+    if(!previous){if(append&&change.append)byId.set(change.id,change.append);continue;}
+    const next=change.apply(previous);if(next)byId.set(change.id,next);else byId.delete(change.id);
+  }
+  return mergeMessages([...byId.values()]);
+}
+function finishMessageLoad(channelId:string,id:number):void {if(messageLoads.get(channelId)?.id===id)messageLoads.delete(channelId);}
 
 export async function loadMessages(channelId: string, opts: { reset?: boolean; around?: string } = {}): Promise<void> {
   const existing = getState().messages[channelId];
-  if (existing && !opts.reset && !opts.around) return;
+  if (existing && !existing.loadFailed && !opts.reset && !opts.around) return;
   if (opts.around && existing?.items.some((m) => m.id === opts.around)) return;
-  setState((s) => ({ messages: { ...s.messages, [channelId]: { items: existing?.items ?? [], hasMoreBefore: true, atLatest: true, loading: true } } }));
+  const id=beginMessageLoad(channelId,{items:existing?.items??[],hasMoreBefore:true,atLatest:!opts.around,loading:true});
   try {
     const q = opts.around ? `?around=${opts.around}&limit=${PAGE}` : `?limit=${PAGE}`;
     const items = await api.get<Message[]>(`/channels/${channelId}/messages${q}`);
+    if(!ownsMessageLoad(channelId,id))return;
     const lastKnown = getState().channels[channelId]?.lastMessageId;
     const atLatest = !opts.around || !lastKnown || items.some((m) => m.id === lastKnown) || items.length === 0;
+    const reconciled=applyMessageChanges(channelId,items,atLatest);
+    const pending=atLatest?(getState().messages[channelId]?.items.filter(m=>m.id.startsWith('pending-'))??[]):[];
     setState((s) => ({
-      messages: { ...s.messages, [channelId]: { items, hasMoreBefore: opts.around ? true : items.length >= PAGE, atLatest, loading: false } },
+      messages: { ...s.messages, [channelId]: { items:mergeMessages(pending,reconciled), hasMoreBefore: opts.around ? true : items.length >= PAGE, atLatest, loading: false } },
       users: mergeUsers(s, items.map((m) => m.author)),
     }));
   } catch (err) {
-    setState((s) => ({ messages: { ...s.messages, [channelId]: { items: [], hasMoreBefore: false, atLatest: true, loading: false } } }));
+    if(!ownsMessageLoad(channelId,id))return;
+    setState((s) => ({ messages: { ...s.messages, [channelId]: { ...s.messages[channelId]!, loading: false,loadFailed:true } } }));
     toast(errorMessage(err, 'Не удалось загрузить сообщения'), 'error');
-  }
+  }finally{finishMessageLoad(channelId,id);}
 }
 
 export async function loadOlder(channelId: string): Promise<void> {
@@ -439,32 +476,41 @@ export async function loadOlder(channelId: string): Promise<void> {
   if (!list || list.loading || !list.hasMoreBefore || list.items.length === 0) return;
   const before = list.items.find((m) => !m.pending)?.id;
   if (!before) return;
-  setState((s) => ({ messages: { ...s.messages, [channelId]: { ...list, loading: true } } }));
+  const id=beginMessageLoad(channelId,list);
   try {
     const older = await api.get<Message[]>(`/channels/${channelId}/messages?before=${before}&limit=${PAGE}`);
+    if(!ownsMessageLoad(channelId,id))return;
+    const items=applyMessageChanges(channelId,older,false);
     setState((s) => {
       const cur = s.messages[channelId]!;
       return {
-        messages: { ...s.messages, [channelId]: { ...cur, items: [...older, ...cur.items], hasMoreBefore: older.length >= PAGE, loading: false } },
+        messages: { ...s.messages, [channelId]: { ...cur, items: mergeMessages(items,cur.items), hasMoreBefore: older.length >= PAGE, loading: false } },
         users: mergeUsers(s, older.map((m) => m.author)),
       };
     });
   } catch {
+    if(!ownsMessageLoad(channelId,id))return;
     setState((s) => ({ messages: { ...s.messages, [channelId]: { ...s.messages[channelId]!, loading: false } } }));
-  }
+  }finally{finishMessageLoad(channelId,id);}
 }
 
 export async function loadNewer(channelId: string): Promise<void> {
   const list = getState().messages[channelId];
   if (!list || list.atLatest || list.loading) return;
-  const after = list.items[list.items.length - 1]?.id;
+  const after = list.items.findLast(m=>!m.id.startsWith('pending-'))?.id;
   if (!after) return;
-  setState((s) => ({ messages: { ...s.messages, [channelId]: { ...list, loading: true } } }));
-  const newer = await api.get<Message[]>(`/channels/${channelId}/messages?after=${after}&limit=${PAGE}`).catch(() => []);
+  const id=beginMessageLoad(channelId,list);
+  try{
+  const newer = await api.get<Message[]>(`/channels/${channelId}/messages?after=${after}&limit=${PAGE}`);
+  if(!ownsMessageLoad(channelId,id))return;
+  const items=applyMessageChanges(channelId,newer,newer.length<PAGE);
   setState((s) => {
     const cur = s.messages[channelId]!;
-    return { messages: { ...s.messages, [channelId]: { ...cur, items: [...cur.items, ...newer], atLatest: newer.length < PAGE, loading: false } } };
+    return { messages: { ...s.messages, [channelId]: { ...cur, items:mergeMessages(items,cur.items), atLatest: newer.length < PAGE, loading: false } },users:mergeUsers(s,items.map(m=>m.author)) };
   });
+  }catch{
+    if(ownsMessageLoad(channelId,id))setState((s)=>({messages:{...s.messages,[channelId]:{...s.messages[channelId]!,loading:false}}}));
+  }finally{finishMessageLoad(channelId,id);}
 }
 
 export interface OutgoingMessage {
@@ -543,22 +589,27 @@ export async function toggleReaction(m: Message, emoji: string): Promise<void> {
   }
 }
 
-const readInFlight = new Map<string, string>();
+const readInFlight = new Map<string, {id:string;marker:AppState['readStates'][string]}>();
 export async function markRead(channelId: string, messageId?: string): Promise<void> {
   const s = getState();
   const id = messageId ?? s.channels[channelId]?.lastMessageId;
   if (!id || id.startsWith('pending')) return;
   const rs = s.readStates[channelId];
   if (rs && !isNewer(id, rs.lastReadId) && rs.mentionCount === 0) return;
-  if (readInFlight.get(channelId) === id) return;
-  readInFlight.set(channelId, id);
-  setState((st) => ({ readStates: { ...st.readStates, [channelId]: { channelId, lastReadId: id, mentionCount: 0 } } }));
+  if (readInFlight.get(channelId)?.id === id) return;
+  const marker={channelId,lastReadId:rs&&isNewer(rs.lastReadId,id)?rs.lastReadId:id,mentionCount:0};
+  const pending={id,marker};readInFlight.set(channelId,pending);
+  setState((st) => ({ readStates: { ...st.readStates, [channelId]: marker } }));
   try {
     await api.post(`/channels/${channelId}/read`, { messageId: id });
   } catch {
-    /* will retry on next view */
+    // Restore only our optimistic marker; preserve newer gateway events and other accounts.
+    setState(st=>{
+      if(st.readStates[channelId]!==marker)return {};
+      const next={...st.readStates};if(rs)next[channelId]=rs;else delete next[channelId];return {readStates:next};
+    });
   } finally {
-    readInFlight.delete(channelId);
+    if(readInFlight.get(channelId)===pending)readInFlight.delete(channelId);
   }
 }
 
