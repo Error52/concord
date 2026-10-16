@@ -20,6 +20,7 @@ import { ModalHost } from './components/modals/Modals';
 import { ProfilePopover, FullProfileModal } from './components/profile/ProfilePopover';
 import { SettingsPage } from './components/settings/SettingsPage';
 import { ServerSettings } from './components/server/ServerSettings';
+import {installMediaRecovery} from './utils/mediaRecovery';
 
 function ConnectionBanner() {
   const gw = useApp((s) => s.gateway);
@@ -29,6 +30,7 @@ function ConnectionBanner() {
 }
 
 function Main() {
+  useEffect(installMediaRecovery,[]);
   const route = useRoute();
   const ready = useApp((s) => s.ready);
   const membersOpen = useUi((s) => s.memberListOpen);

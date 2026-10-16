@@ -8,6 +8,7 @@ import * as auth from '../services/authService.js';
 import * as S from './schemas.js';
 import { queryOne } from '../db/pool.js';
 import { Errors } from '../http/errors.js';
+import {openMail} from '../services/mailCrypto.js';
 
 export const REFRESH_COOKIE = 'cc_refresh';
 export const MEDIA_COOKIE = 'cc_media';
@@ -81,12 +82,12 @@ export function registerAuth(r: Router): void {
   r.get('/auth/email/demo', {rateLimit:{name:'demo-mail',max:30,windowSec:60,by:'user'}}, async(ctx)=>{
     if(!config.DEMO_MAILBOX)throw Errors.notFound('Демопочта');
     // No address/ID parameter, no reset links, no HTML. Only this authenticated user's live verification link.
-    const row=await queryOne<{text_body:string}>(`SELECT e.text_body FROM outbound_emails e
+    const row=await queryOne<{text_body:string;html_body:string}>(`SELECT e.text_body,e.html_body FROM outbound_emails e
       JOIN users u ON u.id=e.user_id
       WHERE e.user_id=$1 AND u.email_verified_at IS NULL AND e.created_at>now()-interval '24 hours'
         AND e.subject='Concord — подтвердите почту'
       ORDER BY e.created_at DESC LIMIT 1`,[ctx.user.id]);
-    const candidate=row?.text_body.match(/https?:\/\/[^\s]+\/verify-email\?token=([^\s]+)/)?.[1];
+    const candidate=row?openMail(row).text.match(/https?:\/\/[^\s]+\/verify-email\?token=([^\s]+)/)?.[1]:undefined;
     const valid=candidate?await queryOne<{id:string}>(`SELECT id FROM email_verifications WHERE user_id=$1
       AND token_hash=encode(sha256($2::bytea),'hex') AND used_at IS NULL AND expires_at>now()`,[ctx.user.id,Buffer.from(candidate)]):null;
     return {verificationPath:valid?`/verify-email?token=${encodeURIComponent(candidate!)}`:null};

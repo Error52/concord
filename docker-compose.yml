@@ -31,20 +31,24 @@ x-backend-env: &backend-env
   LIVEKIT_API_SECRET: ${LIVEKIT_API_SECRET:?set LIVEKIT_API_SECRET in .env (at least 32 characters)}
   GIF_PROVIDER: ${GIF_PROVIDER:-giphy}
   GIF_API_KEY: ${GIF_API_KEY:-}
-  SMTP_HOST: ${SMTP_HOST:-mailpit}
+  SMTP_HOST: ${SMTP_HOST-mailpit}
   SMTP_PORT: ${SMTP_PORT:-1025}
   SMTP_USER: ${SMTP_USER:-}
   SMTP_PASSWORD: ${SMTP_PASSWORD:-}
   SMTP_STARTTLS: ${SMTP_STARTTLS:-false}
   SMTP_TLS: ${SMTP_TLS:-false}
   MAIL_FROM: ${MAIL_FROM:-Concord <no-reply@concord.local>}
+  MAIL_ENCRYPTION_KEY: ${MAIL_ENCRYPTION_KEY:-${JWT_SECRET}}
   SEED_ON_START: ${SEED_ON_START:-1}
   PLATFORM_ADMIN_EMAILS: ${PLATFORM_ADMIN_EMAILS:-}
   LOG_LEVEL: ${LOG_LEVEL:-info}
 
 services:
   frontend:
-    build: ./frontend
+    build:
+      context: ./frontend
+      args:
+        NPM_REGISTRY: ${NPM_REGISTRY:-https://registry.npmjs.org}
     ports:
       # On a public server only Caddy (80/443) is exposed; nginx listens on localhost.
       - "${HTTP_BIND:-0.0.0.0}:${HTTP_PORT:-80}:80"
@@ -54,7 +58,10 @@ services:
     restart: unless-stopped
 
   backend:
-    build: ./backend
+    build:
+      context: ./backend
+      args:
+        NPM_REGISTRY: ${NPM_REGISTRY:-https://registry.npmjs.org}
     environment: *backend-env
     volumes:
       - uploads:/app/data/uploads
@@ -66,7 +73,8 @@ services:
     restart: unless-stopped
 
   postgres:
-    image: postgres:16-bookworm
+    # Existing clusters must retain their original libc/locale provider.
+    image: ${POSTGRES_IMAGE:?Set POSTGRES_IMAGE to the image family that created pgdata - see docs/UPGRADING.md}
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-concord}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-concord}
@@ -107,7 +115,7 @@ services:
           tcp_port: ${LIVEKIT_TCP_PORT:-7881}
           # all WebRTC media on ONE UDP port (easy firewall/NAT, no huge port range in Docker)
           udp_port: ${LIVEKIT_UDP_PORT:-7882}
-          enable_loopback_candidate: true
+          enable_loopback_candidate: ${LIVEKIT_ENABLE_LOOPBACK:-false}
           use_external_ip: false
           turn_servers:
             - host: ${TURN_PUBLIC_HOST:-localhost}

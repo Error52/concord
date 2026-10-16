@@ -9,7 +9,7 @@ import { audit, AuditAction } from './auditService.js';
 import { control, emit } from '../websocket/bus.js';
 import { Ev } from '../websocket/events.js';
 import { deleteMedia, storeProcessedImage } from './mediaService.js';
-import { voiceStatesForServer,forceDisconnectUser,statesForChannels } from './voiceService.js';
+import { voiceStatesForServer,forceDisconnectUser,statesForChannels,syncVoicePermissions } from './voiceService.js';
 import { postSystem } from './messageService.js';
 import type { ChannelDTO } from '../models/dto.js';
 
@@ -134,7 +134,12 @@ async function join(serverId: string, userId: string) {
     `INSERT INTO server_members (server_id, user_id) VALUES ($1, $2) ON CONFLICT DO NOTHING`,
     [serverId, userId],
   );
-  if (inserted > 0) {
+  return finishJoin(serverId, userId, inserted > 0);
+}
+
+/** Broadcast only after membership and invite accounting have committed together. */
+async function finishJoin(serverId: string, userId: string, inserted: boolean) {
+  if (inserted) {
     await control({ kind: 'subscribe', userId, serverId });
     const [member] = await repo.loadMembers(serverId, [userId]);
     await emit(Ev.MemberJoin, member, { server: serverId });
@@ -145,7 +150,7 @@ async function join(serverId: string, userId: string) {
     if (first) await postSystem(first.id, userId, 'joined');
   }
   const full = await getFull(serverId, userId);
-  if (inserted > 0) await emit(Ev.ServerCreate, full, { users: [userId] });
+  if (inserted) await emit(Ev.ServerCreate, full, { users: [userId] });
   return full;
 }
 
@@ -341,6 +346,7 @@ export async function updateRole(
     [roleId, patch.name?.trim() ?? null, patch.color !== undefined, patch.color ?? null, patch.permissions ?? null, patch.hoist ?? null],
   );
   await audit(serverId, userId, AuditAction.RoleUpdate, { type: 'role', id: roleId }, patch);
+  if (patch.permissions !== undefined) await syncVoicePermissions(serverId);
   await emitRoles(serverId);
 }
 
@@ -349,6 +355,7 @@ export async function deleteRole(serverId: string, userId: string, roleId: strin
   const role = await editableRole(serverId, roleId, actor);
   if (role.is_default) throw Errors.badRequest('Базовую роль нельзя удалить');
   await execute(`DELETE FROM roles WHERE id = $1`, [roleId]);
+  await syncVoicePermissions(serverId);
   await audit(serverId, userId, AuditAction.RoleDelete, { type: 'role', id: roleId }, { name: role.name });
   await emit(Ev.RoleDelete, { serverId, roleId }, { server: serverId });
   await emitRoles(serverId);
@@ -376,6 +383,7 @@ export async function setMemberRoles(serverId: string, actorId: string, targetId
     await execute(`DELETE FROM member_roles WHERE server_id = $1 AND user_id = $2`, [serverId, targetId], db);
     for (const id of desired) await execute(`INSERT INTO member_roles (server_id, user_id, role_id) VALUES ($1, $2, $3)`, [serverId, targetId, id], db);
   });
+  await syncVoicePermissions(serverId, [targetId]);
   await audit(serverId, actorId, AuditAction.MemberRoleUpdate, { type: 'user', id: targetId }, { roleIds: [...desired] });
   const [member] = await repo.loadMembers(serverId, [targetId]);
   await emit(Ev.MemberUpdate, member, { server: serverId });
@@ -436,10 +444,14 @@ export async function deleteInvite(code: string, userId: string): Promise<void> 
 
 async function validInvite(code: string): Promise<InviteRow> {
   const inv = await queryOne<InviteRow>(`SELECT * FROM invites WHERE code = $1`, [code]);
+  assertInviteUsable(inv);
+  return inv;
+}
+
+function assertInviteUsable(inv: InviteRow | null): asserts inv is InviteRow {
   if (!inv) throw new AppError(404, 'INVITE_INVALID', 'Приглашение недействительно');
   if (inv.expires_at && inv.expires_at.getTime() < Date.now()) throw new AppError(410, 'INVITE_EXPIRED', 'Срок действия приглашения истёк');
   if (inv.max_uses !== null && inv.uses >= inv.max_uses) throw new AppError(410, 'INVITE_EXHAUSTED', 'Приглашение больше не действует');
-  return inv;
 }
 
 export async function previewInvite(code: string) {
@@ -450,17 +462,23 @@ export async function previewInvite(code: string) {
 }
 
 export async function acceptInvite(code: string, userId: string) {
-  const inv = await validInvite(code);
-  const already = await getAccess(inv.server_id, userId);
-  if (!already) {
-    // Atomic use counter guards max_uses against concurrent redemptions.
-    const ok = await execute(
-      `UPDATE invites SET uses = uses + 1 WHERE code = $1 AND (max_uses IS NULL OR uses < max_uses) AND (expires_at IS NULL OR expires_at > now())`,
-      [code],
+  const result = await tx(async (db) => {
+    // Serialize redemptions of this invite; rollback also restores its use count.
+    const inv = await queryOne<InviteRow>(`SELECT * FROM invites WHERE code = $1 FOR UPDATE`, [code], db);
+    if (!inv) throw new AppError(404, 'INVITE_INVALID', 'Приглашение недействительно');
+    const banned = await queryOne(`SELECT 1 FROM bans WHERE server_id = $1 AND user_id = $2`, [inv.server_id, userId], db);
+    if (banned) throw Errors.forbidden('Вы заблокированы на этом сервере');
+    const already = await queryOne(`SELECT 1 FROM server_members WHERE server_id = $1 AND user_id = $2`, [inv.server_id, userId], db);
+    if (already) return { serverId: inv.server_id, inserted: false };
+    assertInviteUsable(inv);
+    const inserted = await execute(
+      `INSERT INTO server_members (server_id, user_id) VALUES ($1, $2) ON CONFLICT DO NOTHING`,
+      [inv.server_id, userId], db,
     );
-    if (ok === 0) throw new AppError(410, 'INVITE_EXHAUSTED', 'Приглашение больше не действует');
-  }
-  return join(inv.server_id, userId);
+    if (inserted) await execute(`UPDATE invites SET uses = uses + 1 WHERE code = $1`, [code], db);
+    return { serverId: inv.server_id, inserted: inserted > 0 };
+  });
+  return finishJoin(result.serverId, userId, result.inserted);
 }
 
 // ─────────────── discovery ───────────────

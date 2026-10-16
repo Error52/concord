@@ -49,8 +49,9 @@ const schema = z.object({
   SMTP_STARTTLS: bool,
   SMTP_TLS: bool,
   MAIL_FROM: z.string().default('Concord <no-reply@concord.local>'),
+  MAIL_ENCRYPTION_KEY: z.preprocess(v=>v===''?undefined:v,z.string().min(32).optional()),
 
-  /** Comma-separated emails that are always platform admins (admin panel, special badges). */
+  /** Email allowlist, promoted only after real SMTP verification (never demo confirmation). */
   PLATFORM_ADMIN_EMAILS: z.string().default(''),
 
   LOG_LEVEL: z.enum(['debug', 'info', 'warn', 'error']).default('info'),
@@ -71,3 +72,12 @@ export const config = load();
 export const isProd = config.NODE_ENV === 'production';
 export const corsOrigins = new Set(config.CORS_ORIGINS.split(',').map((s) => s.trim()).filter(Boolean));
 export const platformAdminEmails = config.PLATFORM_ADMIN_EMAILS.split(',').map((s) => s.trim().toLowerCase()).filter(Boolean);
+
+/** Fail before accepting registrations when public verification cannot deliver mail. */
+export function validateMailConfiguration(): void {
+  if (config.SMTP_USER && !config.SMTP_TLS && !config.SMTP_STARTTLS) throw new Error('SMTP authentication requires SMTP_TLS=true or SMTP_STARTTLS=true');
+  if (config.NODE_ENV==='production' && config.REQUIRE_EMAIL_VERIFICATION && !config.DEMO_MAILBOX &&
+    (!config.SMTP_HOST || (config.SMTP_HOST==='mailpit' && !['localhost','127.0.0.1'].includes(new URL(config.APP_URL).hostname)))) {
+    throw new Error('Email verification requires a real SMTP server. Set SMTP_HOST, SMTP_PORT, MAIL_FROM and SMTP_TLS/SMTP_STARTTLS in .env. For local LAN demos use DEMO_MAILBOX=true.');
+  }
+}

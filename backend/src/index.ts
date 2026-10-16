@@ -1,4 +1,4 @@
-import { config } from './config.js';
+import { config,validateMailConfiguration } from './config.js';
 import { log } from './logger.js';
 import { migrate } from './db/migrate.js';
 import { pool } from './db/pool.js';
@@ -8,9 +8,13 @@ import { createApp } from './app.js';
 import { startJobs } from './jobs.js';
 import { seed } from './db/seed.js';
 import { syncPlatformAdmins } from './services/adminService.js';
+import {protectQueuedMail,clearInvalidMail} from './services/mailOutbox.js';
 
 async function main(): Promise<void> {
+  validateMailConfiguration();
   await migrate();
+  await protectQueuedMail();
+  await clearInvalidMail();
   await storage.ensureBucket();
   if (process.env.SEED_ON_START === '1') await seed();
   await syncPlatformAdmins();

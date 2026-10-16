@@ -89,6 +89,19 @@ try {
  }
  await page.locator('.settings-close button').click();
  await page.setViewportSize({width:1440,height:900});
+ await page.getByRole('button',{name:'Личные сообщения',exact:true}).click();
+ await page.locator('.friends-head').waitFor();
+ for(const width of [1440,760,390,320]){
+  await page.setViewportSize({width,height:width===1440?900:568});
+  await fits(page,'.friends-head');
+  const title=await page.locator('.friends-head .main-head-title').evaluate(e=>({scroll:e.scrollWidth,client:e.clientWidth,text:e.textContent}));
+  assert.ok(title.scroll<=title.client+1&&title.text.includes('Друзья'),`friends title remains fully visible at ${width}: ${JSON.stringify(title)}`);
+  await fits(page,'.friends-head .segmented');
+  await page.screenshot({path:path.join(dir,`friends-${width}.png`)});checks.push(`friends header ${width}`);
+ }
+ await page.setViewportSize({width:1440,height:900});
+ await page.getByRole('button',{name:'Demo Server',exact:true}).click();
+ await page.getByRole('textbox',{name:'Написать в #general'}).waitFor();
  await page.getByRole('button',{name:'Добавить сервер',exact:true}).click();
  for(const [width,height] of [[390,844],[320,568],[667,375]]) {
   await page.setViewportSize({width,height});await fits(page,'.modal');await wheel(page,'.modal-body');
@@ -97,7 +110,7 @@ try {
  }
  await page.keyboard.press('Escape');await page.locator('.modal').waitFor({state:'hidden'});
  await page.setViewportSize({width:390,height:844});
- await page.locator('.msg').first().click({button:'right'});
+ await page.locator('.messages .msg[data-message-id]').first().click({button:'right'});
  await page.getByRole('menuitem',{name:'Открыть ветку',exact:true}).click();
  await page.locator('.thread-panel .msg').first().waitFor();
  await fits(page,'.thread-panel');await fits(page,'.thread-panel .composer-wrap');
@@ -105,7 +118,7 @@ try {
  await page.getByRole('button',{name:'Закрыть ветку'}).click();
  await page.getByRole('button',{name:'Эмодзи',exact:true}).click();await fits(page,'.picker');await wheel(page,'.picker-body');
  await page.keyboard.press('Escape');
- await page.locator('.msg').first().click({button:'right'});await page.getByRole('menuitem',{name:'Добавить реакцию',exact:true}).click();
+ await page.locator('.messages .msg[data-message-id]').first().click({button:'right'});await page.getByRole('menuitem',{name:'Добавить реакцию',exact:true}).click();
  for(const [width,height] of [[390,844],[320,568],[667,375]]) {await page.setViewportSize({width,height});await fits(page,'.picker');await wheel(page,'.picker-body');}
  await page.keyboard.press('Escape');await page.setViewportSize({width:390,height:844});
  await page.getByRole('button',{name:'Меню',exact:true}).first().click();await page.locator('.app.nav-open').waitFor();
@@ -124,7 +137,7 @@ try {
  await auth.getByLabel('Email').fill('alice@concord.local');await auth.getByLabel('Пароль').fill('demo12345');await auth.getByRole('button',{name:'Войти',exact:true}).click();
  await auth.getByRole('button',{name:'Меню',exact:true}).first().click();await auth.locator('.rail').getByRole('button',{name:'Demo Server',exact:true}).click();
  await auth.getByRole('textbox',{name:'Написать в #general'}).waitFor();
- await auth.locator('.messages .msg').first().waitFor();
+ await auth.locator('.messages .msg[data-message-id]').first().waitFor();
  await auth.waitForFunction(()=>{const e=document.querySelector('.messages'),r=e.getBoundingClientRect();return e.scrollHeight>e.clientHeight+20 && document.elementFromPoint(20,300)?.closest('.messages');});
  await auth.locator('.messages').evaluate(e=>e.scrollTop=e.scrollHeight);
  const top=await auth.locator('.messages').evaluate(e=>e.scrollTop);

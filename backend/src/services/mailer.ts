@@ -33,22 +33,22 @@ class SmtpSession {
     for(const waiter of this.waiters.splice(0)){clearTimeout(waiter.timer);waiter.reject(err);}
   }
 
-  constructor(private sock: Sock) {
+  constructor(private sock: Sock, private timeoutMs: number) {
     this.attach(sock);
   }
 
   private attach(sock: Sock): void {
     sock.setEncoding('utf8');
     sock.on('data',this.onData).on('error',this.onError).on('close',this.onClose);
-    sock.setTimeout(15_000,()=>{this.fail(new Error('SMTP timeout'));sock.destroy();});
+    sock.setTimeout(this.timeoutMs,()=>{this.fail(new Error('SMTP timeout'));sock.destroy();});
   }
 
   read(): Promise<string> {
+    if(this.failure)return Promise.reject(this.failure);
     const reply=this.replies.shift();
     if(reply)return Promise.resolve(reply);
-    if(this.failure)return Promise.reject(this.failure);
     return new Promise((resolve, reject) => {
-      const timer=setTimeout(()=>{this.fail(new Error('SMTP timeout'));this.sock.destroy();},15_000);
+      const timer=setTimeout(()=>{this.fail(new Error('SMTP timeout'));this.sock.destroy();},this.timeoutMs);
       this.waiters.push({resolve,reject,timer});
     });
   }
@@ -64,13 +64,25 @@ class SmtpSession {
     const old=this.sock;
     old.off('data',this.onData).off('error',this.onError).off('close',this.onClose);
     old.setTimeout(0);
-    this.sock=tls.connect({socket:old as net.Socket,servername:host});
+    // RFC 3207: no pre-TLS reply or capability is trusted after STARTTLS.
+    this.buffer='';this.replies=[];
+    this.sock=tls.connect({socket:old as net.Socket,host,servername:net.isIP(host)?undefined:host});
     this.attach(this.sock);
-    await new Promise<void>((resolve,reject)=>{this.sock.once('secureConnect',resolve);this.sock.once('error',reject);});
+    await this.connected(true);
+  }
+
+  connected(secure: boolean): Promise<void> {
+    const socket=this.sock,event=secure?'secureConnect':'connect';
+    return new Promise((resolve,reject)=>{
+      const finish=(err?:Error)=>{clearTimeout(timer);socket.off(event,onReady);socket.off('error',onFailure);socket.off('close',onClosed);err?reject(err):resolve();};
+      const onReady=()=>finish(),onFailure=(err:Error)=>finish(err),onClosed=()=>finish(this.failure??new Error('SMTP connection closed before handshake'));
+      const timer=setTimeout(()=>{const err=new Error('SMTP connection/handshake timeout');this.fail(err);finish(err);socket.destroy();},this.timeoutMs);
+      socket.once(event,onReady).once('error',onFailure).once('close',onClosed);
+    });
   }
 
   end(): void {
-    this.sock.end();
+    this.sock.destroy();
   }
 }
 
@@ -85,20 +97,19 @@ function encodeHeader(value: string): string {
   return /^[\x20-\x7e]*$/.test(value) ? value : `=?UTF-8?B?${Buffer.from(value).toString('base64')}?=`;
 }
 
-export type SmtpOptions = Pick<typeof config,'SMTP_HOST'|'SMTP_PORT'|'SMTP_TLS'|'SMTP_STARTTLS'|'SMTP_USER'|'SMTP_PASSWORD'|'MAIL_FROM'>;
+export type SmtpOptions = Pick<typeof config,'SMTP_HOST'|'SMTP_PORT'|'SMTP_TLS'|'SMTP_STARTTLS'|'SMTP_USER'|'SMTP_PASSWORD'|'MAIL_FROM'> & {timeoutMs?:number};
 
 export async function sendMail(mail: Mail, options:SmtpOptions=config): Promise<void> {
   if (!options.SMTP_HOST) throw new Error('SMTP is not configured');
+  if ((options.SMTP_USER || options.SMTP_PASSWORD) && !(options.SMTP_USER && options.SMTP_PASSWORD)) throw new Error('SMTP requires both username and password');
+  if (options.SMTP_USER && !options.SMTP_TLS && !options.SMTP_STARTTLS) throw new Error('SMTP authentication requires TLS or STARTTLS');
   if([mail.to,mail.subject,options.MAIL_FROM].some(v=>/[\r\n]/.test(v)))throw new Error('Invalid email header');
   const host = options.SMTP_HOST;
-  const sock = options.SMTP_TLS ? tls.connect({host,port:options.SMTP_PORT,servername:host}) : net.connect({ host, port: options.SMTP_PORT });
+  const sock = options.SMTP_TLS ? tls.connect({host,port:options.SMTP_PORT,servername:net.isIP(host)?undefined:host}) : net.connect({ host, port: options.SMTP_PORT });
   // Listen before connect: the server may send its greeting immediately.
-  const s = new SmtpSession(sock);
+  const s = new SmtpSession(sock,options.timeoutMs??15_000);
   try {
-  await new Promise<void>((resolve, reject) => {
-    sock.once(options.SMTP_TLS?'secureConnect':'connect', resolve);
-    sock.once('error', reject);
-  });
+    await s.connected(options.SMTP_TLS);
     const greeting=await s.read();
     if(!greeting.startsWith('220'))throw new Error('SMTP invalid greeting');
     await s.cmd(`EHLO concord.local`, 250);

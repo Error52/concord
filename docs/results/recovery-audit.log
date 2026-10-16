@@ -1,0 +1,28 @@
+PASS lookup discovery ignores results from a previous search
+PASS lookup invite ignores an old error after switching to a valid invite
+PASS search ignores older responses and clearing query invalidates pending work
+PASS thread replays new replies, edits and deletions received during initial fetch
+PASS open thread refreshes missed replies after gateway reconnect
+PASS inbox read acknowledgement preserves notifications arriving after the server update
+PASS inbox handles a read failure without an unhandled rejection
+PASS clearing inbox preserves a notification arriving after the server delete
+PASS failed DM close preserves the conversation and a confirmed close leaves it
+PASS stale disconnect is ignored and deleting the active channel releases capture
+PASS deleting the active server disconnects the SFU room and releases capture
+{
+  "checks": [
+    "lookup discovery ignores results from a previous search",
+    "lookup invite ignores an old error after switching to a valid invite",
+    "search ignores older responses and clearing query invalidates pending work",
+    "thread replays new replies, edits and deletions received during initial fetch",
+    "open thread refreshes missed replies after gateway reconnect",
+    "inbox read acknowledgement preserves notifications arriving after the server update",
+    "inbox handles a read failure without an unhandled rejection",
+    "clearing inbox preserves a notification arriving after the server delete",
+    "failed DM close preserves the conversation and a confirmed close leaves it",
+    "stale disconnect is ignored and deleting the active channel releases capture",
+    "deleting the active server disconnects the SFU room and releases capture"
+  ],
+  "failures": [],
+  "errors": []
+}

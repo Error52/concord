@@ -184,6 +184,7 @@ while IFS= read -r line || [ -n "$line" ]; do
     HTTPS_PORT) kv HTTPS_PORT "$HTTPS_PORT" ;;
     COOKIE_SECURE) kv COOKIE_SECURE "$COOKIE_SECURE" ;;
     DEMO_MAILBOX) if [ "$MODE" = lan ]; then kv DEMO_MAILBOX true; else kv DEMO_MAILBOX false; fi ;;
+    LIVEKIT_ENABLE_LOOPBACK) if [ "$MODE" = server ]; then kv LIVEKIT_ENABLE_LOOPBACK false; else kv LIVEKIT_ENABLE_LOOPBACK true; fi ;;
     COMPOSE_PROFILES) kv COMPOSE_PROFILES "$PROFILES" ;;
     POSTGRES_PASSWORD) kv POSTGRES_PASSWORD "$PG" ;;
     DATABASE_URL) kv DATABASE_URL "postgres://concord:$PG@localhost:5432/concord" ;;
@@ -222,7 +223,8 @@ case "$MODE" in
     echo "  open $APP_URL  — register the first account there and invite friends with an invite link."
     echo "  Firewall: open 80/tcp, 443/tcp+udp, 7881/tcp, 7882/udp, 3478/tcp+udp, 49160-49200/udp"
     echo "  (cloud providers: also in the provider's security group / firewall panel)."
-    echo "  Password-reset emails need SMTP_* in .env (any SMTP provider)."
+    echo "  Before starting: set SMTP_HOST, SMTP_PORT, MAIL_FROM and SMTP_TLS/SMTP_STARTTLS in .env."
+    echo "  Registration requires email delivery; server mode does not start Mailpit."
     ;;
 esac
 if [ "$OS" = "Darwin" ] && [ "$MODE" != "server" ]; then

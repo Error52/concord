@@ -8,11 +8,13 @@ import {applyThreadEvent,type ThreadData,type ThreadEvent} from '../../state/thr
 import { toast } from '../../state/ui';
 import { MessageItem, canManageIn } from './MessageItem';
 import { Composer } from './Composer';
-import type { Message } from '../../types';
+import { ImageLightbox } from './ImageLightbox';
+import type { Attachment, Message } from '../../types';
 
 /** Thread = a message plus its reply chain. New replies arrive live via the gateway. */
 export function ThreadPanel({ channelId, serverId, messageId, onClose }: { channelId: string; serverId: string | null; messageId: string; onClose: () => void }) {
   const [data, setData] = useState<ThreadData | null>(null);
+  const [lightbox, setLightbox] = useState<Attachment | null>(null);
   const { manage, pin } = canManageIn(serverId);
 
   useEffect(() => {
@@ -70,17 +72,18 @@ export function ThreadPanel({ channelId, serverId, messageId, onClose }: { chann
         {!data && <div className="skeleton" style={{ height: 60, margin: 16 }} />}
         {data && (
           <>
-            <MessageItem m={{ ...data.parent, replyTo: null }} head canManage={manage} canPin={pin} onOpenImage={() => undefined} highlight={false} />
+            <MessageItem m={{ ...data.parent, replyTo: null }} head canManage={manage} canPin={pin} onOpenImage={setLightbox} highlight={false} />
             <div className="divider-text">
               {data.replies.length} {data.replies.length === 1 ? 'ответ' : 'ответов'}
             </div>
             {data.replies.map((r) => (
-              <MessageItem key={r.id} m={{ ...r, replyTo: null }} head canManage={manage} canPin={pin} onOpenImage={() => undefined} highlight={false} />
+              <MessageItem key={r.id} m={{ ...r, replyTo: null }} head canManage={manage} canPin={pin} onOpenImage={setLightbox} highlight={false} />
             ))}
           </>
         )}
       </div>
       <Composer channelId={channelId} serverId={serverId} placeholder="Ответить в ветке" fixedReplyTo={messageId} compact />
+      {lightbox && <ImageLightbox image={lightbox} onClose={() => setLightbox(null)} />}
     </aside>
   );
 }

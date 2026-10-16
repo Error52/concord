@@ -1,10 +1,10 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
-import { createPortal } from 'react-dom';
 import { useApp } from '../../state/app';
 import { loadMessages, loadNewer, loadOlder, markRead } from '../../state/actions';
 import { uiStore, useUi } from '../../state/ui';
 import { formatDate } from '../../utils/format';
 import { canManageIn, MessageItem } from './MessageItem';
+import { ImageLightbox } from './ImageLightbox';
 import type { Attachment, Message } from '../../types';
 
 const GROUP_WINDOW_MS = 7 * 60_000;
@@ -130,18 +130,7 @@ export function MessageList({ channelId, serverId, jumpTo, intro }: Props) {
           К новым сообщениям ↓
         </button>
       )}
-      {lightbox &&
-        createPortal(
-          <div className="lightbox" onClick={() => setLightbox(null)} role="dialog" aria-label={lightbox.filename}>
-            <div style={{ textAlign: 'center' }} onClick={(e) => e.stopPropagation()}>
-              <img src={lightbox.url} alt={lightbox.filename} />
-              <a href={lightbox.url} target="_blank" rel="noopener noreferrer">
-                Открыть оригинал
-              </a>
-            </div>
-          </div>,
-          document.body,
-        )}
+      {lightbox && <ImageLightbox image={lightbox} onClose={() => setLightbox(null)} />}
     </>
   );
 }

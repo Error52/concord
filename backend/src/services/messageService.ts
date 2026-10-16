@@ -274,11 +274,17 @@ export async function setPinned(messageId: string, userId: string, pinned: boole
   if (ca.access && !has(ca.access.perms, Perm.PIN_MESSAGES) && !has(ca.access.perms, Perm.MANAGE_MESSAGES)) {
     throw Errors.forbidden('Нет права закреплять сообщения');
   }
-  if (pinned) {
-    const count = await queryOne<{ n: number }>(`SELECT count(*)::int AS n FROM messages WHERE channel_id = $1 AND pinned`, [msg.channel_id]);
-    if ((count?.n ?? 0) >= 50) throw Errors.badRequest('Достигнут лимит закреплённых сообщений (50)');
-  }
-  await execute(`UPDATE messages SET pinned = $2 WHERE id = $1`, [messageId, pinned]);
+  await tx(async db => {
+    // All pin/unpin operations in a channel share a lock, including capacity checks.
+    await execute(`SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`, [`pins:${msg.channel_id}`], db);
+    const current = await queryOne<{ pinned: boolean }>(`SELECT pinned FROM messages WHERE id = $1 FOR UPDATE`, [messageId], db);
+    if (!current) throw Errors.notFound('Сообщение');
+    if (pinned && !current.pinned) {
+      const count = await queryOne<{ n: number }>(`SELECT count(*)::int AS n FROM messages WHERE channel_id = $1 AND pinned`, [msg.channel_id], db);
+      if ((count?.n ?? 0) >= 50) throw Errors.badRequest('Достигнут лимит закреплённых сообщений (50)');
+    }
+    await execute(`UPDATE messages SET pinned = $2 WHERE id = $1`, [messageId, pinned], db);
+  });
   if (ca.channel.server_id) await audit(ca.channel.server_id, userId, AuditAction.MessagePin, { type: 'message', id: messageId }, { pinned });
   const [dto] = await hydrate([(await findMessage(messageId))!], userId);
   await emit(Ev.MessageUpdate, dto, targetOf(ca));

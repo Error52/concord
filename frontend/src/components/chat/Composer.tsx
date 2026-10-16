@@ -44,7 +44,9 @@ export const Composer = forwardRef<ComposerHandle, Props>(function Composer({ ch
   const [suggest, setSuggest] = useState<{ query: string; start: number; index: number } | null>(null);
   const [cooldown, setCooldown] = useState(0);
   const [sending,setSending]=useState(false);
-  const sendingRef=useRef(false);
+  const sendingRef=useRef(0);
+  const sendChain=useRef<Promise<unknown>>(Promise.resolve());
+  const reservedUploads=useRef(new Set<string>());
   const active=useRef(false);
   const resources=useRef(new Map<string,Upload>());
   const accountId=useApp(s=>s.me?.id??'guest');
@@ -163,25 +165,30 @@ export const Composer = forwardRef<ComposerHandle, Props>(function Composer({ ch
     });
 
   const submit = async (gif?: Gif) => {
-    if(sendingRef.current)return;
+    if(sendingRef.current && slowmode && !bypassSlowmode)return toast('Дождитесь отправки: в канале включён медленный режим');
     if (!canSend || timedOut) return;
     if (cooldown > 0) return;
     const pending = uploads.some((u) => !u.result && !u.error);
     if (pending) return toast('Дождитесь окончания загрузки файлов');
-    const attachmentIds = uploads.filter((u) => u.result).map((u) => u.result!.id);
+    const available=uploads.filter(u=>u.result&&!reservedUploads.current.has(u.key));
+    const attachmentIds = available.map((u) => u.result!.id);
     const content = gif ? '' : encodeMentions(text.trim());
     if (!content && attachmentIds.length === 0 && !gif) return;
-    const original=text,keys=new Set(uploads.filter(u=>u.result).map(u=>u.key));
-    sendingRef.current=true;setSending(true);setText('');drafts.set(draftKey,'');
-    const ok = await sendMessage(channelId, {
+    const original=text,keys=new Set(available.map(u=>u.key));
+    keys.forEach(key=>reservedUploads.current.add(key));
+    ++sendingRef.current;setSending(true);setText('');drafts.set(draftKey,'');
+    const payload={
       content,
       replyToId: replyId,
       attachmentIds,
       gif: gif ? { url: gif.url, previewUrl: gif.previewUrl, width: gif.width, height: gif.height, title: gif.title } : null,
-    });
-    sendingRef.current=false;
+    };
+    const pendingSend=sendChain.current.then(()=>getState().me?.id===accountId?sendMessage(channelId,payload):false);
+    sendChain.current=pendingSend.catch(()=>false);
+    const ok=await pendingSend;
+    --sendingRef.current;keys.forEach(key=>reservedUploads.current.delete(key));
     if(!active.current){if(!ok&&original&&!drafts.get(draftKey))drafts.set(draftKey,original);return;}
-    setSending(false);
+    setSending(sendingRef.current>0);
     if(!ok){if(original)setText(current=>current||original);return;}
     for(const key of keys)releaseUpload(key);
     setUploads(list=>list.filter(u=>!keys.has(u.key)));
@@ -358,7 +365,7 @@ export const Composer = forwardRef<ComposerHandle, Props>(function Composer({ ch
             <LuSmile />
           </button>
           {(text.trim() || uploads.length > 0) && (
-            <button className="icon-btn" disabled={sending} onClick={() => void submit()} aria-label="Отправить" style={{ color: 'var(--accent)' }}>
+            <button className="icon-btn" aria-busy={sending} onClick={() => void submit()} aria-label="Отправить" style={{ color: 'var(--accent)' }}>
               <LuSend />
             </button>
           )}

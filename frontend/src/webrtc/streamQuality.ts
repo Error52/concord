@@ -11,10 +11,10 @@ export interface StreamProfile {
 }
 
 export const STREAM_QUALITIES: Record<StreamQuality, StreamProfile> = {
-  auto: { label: 'Авто · до 1440p / 60 fps — игры и видео', width: 2560, height: 1440, fps: 60, bitrate: 12_000_000, hint: 'motion', degradation: 'maintain-resolution' },
-  '720p30': { label: '720p · 30 fps — слабый интернет', width: 1280, height: 720, fps: 30, bitrate: 2_500_000, hint: 'motion', degradation: 'maintain-resolution' },
-  '1080p30': { label: '1080p · 30 fps — фильмы и видео', width: 1920, height: 1080, fps: 30, bitrate: 6_000_000, hint: 'motion', degradation: 'maintain-resolution' },
-  '1080p60': { label: '1080p · 60 fps — игры, плавно (нужен хороший канал)', width: 1920, height: 1080, fps: 60, bitrate: 9_000_000, hint: 'motion', degradation: 'maintain-resolution' },
+  auto: { label: 'Авто · до 1440p / 60 fps — игры и видео', width: 2560, height: 1440, fps: 60, bitrate: 12_000_000, hint: 'motion', degradation: 'maintain-framerate' },
+  '720p30': { label: '720p · 30 fps — слабый интернет', width: 1280, height: 720, fps: 30, bitrate: 2_500_000, hint: 'motion', degradation: 'maintain-framerate' },
+  '1080p30': { label: '1080p · 30 fps — фильмы и видео', width: 1920, height: 1080, fps: 30, bitrate: 6_000_000, hint: 'motion', degradation: 'maintain-framerate' },
+  '1080p60': { label: '1080p · 60 fps — игры, плавно (нужен хороший канал)', width: 1920, height: 1080, fps: 60, bitrate: 9_000_000, hint: 'motion', degradation: 'maintain-framerate' },
   text: { label: 'Текст и код — максимум чёткости, 15 fps', width: 2560, height: 1440, fps: 15, bitrate: 4_000_000, hint: 'detail', degradation: 'maintain-resolution' },
 };
 

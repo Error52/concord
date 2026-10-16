@@ -1,5 +1,7 @@
 import {
   ConnectionQuality,
+  ConnectionState,
+  BackupCodecPolicy,
   DisconnectReason,
   LocalTrackPublication,
   Room,
@@ -424,6 +426,8 @@ class VoiceEngine {
           ...STREAM_AUDIO_PUBLISH,
           simulcast: false,
           videoCodec: screenCodec(RTCRtpSender.getCapabilities?.('video') ?? null),
+          backupCodec: {codec:'vp8',encoding:{maxBitrate:q.bitrate,maxFramerate:q.fps}},
+          backupCodecPolicy: BackupCodecPolicy.PREFER_REGRESSION,
           screenShareEncoding: { maxBitrate: q.bitrate, maxFramerate: q.fps },
           videoEncoding: { maxBitrate: q.bitrate, maxFramerate: q.fps },
           degradationPreference: q.degradation,
@@ -687,6 +691,7 @@ class VoiceEngine {
 
   private async startMicrophone(): Promise<void> {
     if (!this.room || this.micPub) return;
+    if (!this.mayPublish(Track.Source.Microphone)) return;
     if (this.micStarting) return this.micStarting;
     const pending = this.publishMicrophone();
     this.micStarting = pending;
@@ -706,7 +711,7 @@ class VoiceEngine {
     }
     const track = this.dest!.stream.getAudioTracks()[0]!;
     this.applyGate();
-    if (voiceStore.get().serverMute || voiceStore.get().serverDeaf) return; // SFU would reject the publication
+    if (voiceStore.get().serverMute || voiceStore.get().serverDeaf || !this.mayPublish(Track.Source.Microphone)) { this.releaseMicrophone(); return; }
     try {
       const publication = await room.localParticipant.publishTrack(track, { ...VOICE_AUDIO_PUBLISH, source: Track.Source.Microphone, name: 'microphone' });
       if (this.room !== room) { await room.localParticipant.unpublishTrack(publication.track!).catch(() => undefined); return; }
@@ -717,6 +722,23 @@ class VoiceEngine {
       log.warn('mic publish failed', { err: String(err) });
       toast('Не удалось передать звук микрофона', 'error');
     }
+  }
+
+  private mayPublish(source:Track.Source):boolean {
+    const p=this.room?.localParticipant.permissions;
+    return !!p?.canPublish && (!p.canPublishSources.length || p.canPublishSources.includes(Track.sourceToProto(source)));
+  }
+
+  private releaseMicrophone():void {
+    ++this.micSeq;
+    this.stopMeter?.();this.stopMeter=null;
+    this.micStream?.getTracks().forEach(t=>t.stop());this.micStream=null;
+    this.micSource?.disconnect();this.micSource=null;
+    this.inputGain?.disconnect();this.gate?.disconnect();this.inputGain=null;this.gate=null;
+    this.dest?.stream.getTracks().forEach(t=>t.stop());this.dest=null;
+    const ctx=this.ctx;this.ctx=null;if(ctx)void ctx.close().catch(()=>undefined);
+    voiceStore.set({gateOpen:false,localSpeaking:false});
+    if(this.lastSpeakingSent){this.lastSpeakingSent=false;gateway.send('voice:speaking',{speaking:false});}
   }
 
   private onLevelReading(db: number): void {
@@ -853,7 +875,12 @@ class VoiceEngine {
       .on(RoomEvent.ActiveSpeakersChanged, () => this.refreshParticipants())
       .on(RoomEvent.ConnectionQualityChanged, () => this.refreshParticipants())
       .on(RoomEvent.LocalTrackUnpublished, (pub) => {
+        const replacement=room.localParticipant.getTrackPublication(pub.source);
+        if(replacement&&replacement!==pub&&replacement.track)return;
+        // LiveKit republishes existing captures after a full reconnect. Do not stop them mid-resume.
+        if(room.state===ConnectionState.Reconnecting)return;
         if (pub.source === Track.Source.Microphone) this.micPub = null;
+        if(pub.source===Track.Source.Microphone && !this.mayPublish(Track.Source.Microphone))this.releaseMicrophone();
         // Covers the browser's own "Stop sharing" button.
         if (pub.source === Track.Source.ScreenShare) {
           const tracks = this.screenTracks;
@@ -875,6 +902,11 @@ class VoiceEngine {
       .on(RoomEvent.LocalTrackPublished, () => this.bump())
       .on(RoomEvent.ParticipantPermissionsChanged, (_prev, participant) => {
         const v = voiceStore.get();
+        if(participant===room.localParticipant&&!this.mayPublish(Track.Source.Microphone)){
+          const pub=this.micPub;this.micPub=null;this.releaseMicrophone();
+          if(pub?.track)void room.localParticipant.unpublishTrack(pub.track).catch(()=>undefined);
+          return;
+        }
         if (participant === room.localParticipant && !v.serverMute && !v.serverDeaf && !this.micPub) void this.startMicrophone();
       })
       .on(RoomEvent.AudioPlaybackStatusChanged, () => voiceStore.set({ audioBlocked: !room.canPlaybackAudio }))
@@ -887,6 +919,10 @@ class VoiceEngine {
       .on(RoomEvent.Reconnected, () => {
         log.info('webrtc connection: reconnected');
         voiceStore.set({ status: 'connected' });
+        this.micPub=room.localParticipant.getTrackPublication(Track.Source.Microphone)??null;
+        if(!this.micPub)void this.startMicrophone();
+        voiceStore.set({camera:!!room.localParticipant.getTrackPublication(Track.Source.Camera)?.track,
+          screen:!!room.localParticipant.getTrackPublication(Track.Source.ScreenShare)?.track});
         this.sampler.reset();
         this.announce();
       })

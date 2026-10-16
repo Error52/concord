@@ -1,7 +1,7 @@
-import { execute, query, queryOne } from '../db/pool.js';
+import { execute, query, queryOne, tx } from '../db/pool.js';
 import { redis } from '../redis.js';
 import { config } from '../config.js';
-import { Errors } from '../http/errors.js';
+import { Errors, AppError } from '../http/errors.js';
 import { Perm, has } from '../models/permissions.js';
 import { getAccess, requireChannel, requirePerm } from './permissionService.js';
 import { loadPublicUser } from '../repositories/userRepo.js';
@@ -28,6 +28,15 @@ const channelFromRoom = (room: string): string | null => (/^ch_([0-9a-f-]{36})$/
 async function getState(userId: string): Promise<VoiceStateDTO | null> {
   const raw = await redis.get(userKey(userId));
   return raw ? (JSON.parse(raw) as VoiceStateDTO) : null;
+}
+
+/** Merge into the still-current room without overwriting concurrent self/moderation changes. */
+async function patchState(userId:string,channelId:string,patch:object):Promise<{before:VoiceStateDTO;after:VoiceStateDTO}|null>{
+  const raw=await redis.eval(`local raw=redis.call('GET',KEYS[1]);if not raw then return nil end
+    local state=cjson.decode(raw);if state.channelId~=ARGV[1] then return nil end
+    local before=raw;for key,value in pairs(cjson.decode(ARGV[2])) do state[key]=value end
+    local after=cjson.encode(state);redis.call('SET',KEYS[1],after);return {before,after}`,1,userKey(userId),channelId,JSON.stringify(patch)) as [string,string]|null;
+  return raw?{before:JSON.parse(raw[0]),after:JSON.parse(raw[1])}:null;
 }
 
 async function targetFor(channelId: string, serverId: string | null): Promise<Target> {
@@ -111,7 +120,9 @@ export async function markJoined(userId: string, channelId: string): Promise<voi
 export async function markLeft(userId: string, channelId?: string): Promise<void> {
   const state = await getState(userId);
   if (!state || (channelId && state.channelId !== channelId)) return;
-  await redis.multi().del(userKey(userId)).srem(roomKey(state.channelId), userId).exec();
+  const removed=await redis.eval(`local raw=redis.call('GET',KEYS[1]);if not raw or cjson.decode(raw).channelId~=ARGV[1] then return 0 end
+    redis.call('DEL',KEYS[1]);redis.call('SREM',KEYS[2],ARGV[2]);return 1`,2,userKey(userId),roomKey(state.channelId),state.channelId,userId);
+  if(!removed)return;
   await recordLeave(userId, state.channelId);
   if (state.screen) await emit(Ev.ScreenStop, { userId, channelId: state.channelId }, await targetFor(state.channelId, state.serverId));
   await emit(Ev.VoiceLeave, { userId, channelId: state.channelId, serverId: state.serverId }, await targetFor(state.channelId, state.serverId));
@@ -123,9 +134,9 @@ export async function updateSelfState(
 ): Promise<void> {
   const state = await getState(userId);
   if (!state) return;
-  const screenChanged = patch.screen !== undefined && patch.screen !== state.screen;
-  const next: VoiceStateDTO = { ...state, ...patch };
-  await redis.set(userKey(userId), JSON.stringify(next));
+  const result=await patchState(userId,state.channelId,patch);if(!result)return;
+  const screenChanged = result.before.screen !== result.after.screen;
+  const next=result.after;
   const target = await targetFor(state.channelId, state.serverId);
   await emit(Ev.VoiceState, next, target);
   if (screenChanged) await emit(next.screen ? Ev.ScreenStart : Ev.ScreenStop, { userId, channelId: state.channelId }, target);
@@ -167,25 +178,55 @@ export async function myState(userId: string): Promise<VoiceStateDTO | null> {
 
 // ─────────────── moderation ───────────────
 
+/** Role changes must also reach participants that already have a LiveKit token. */
+export async function syncVoicePermissions(serverId: string, userIds?: string[]): Promise<void> {
+  const states = userIds
+    ? (await Promise.all(userIds.map(getState))).filter((s): s is VoiceStateDTO => s?.serverId === serverId)
+    : await voiceStatesForServer(serverId);
+  // Bound SFU calls and pool occupancy; serialize each participant across API workers.
+  for (let i = 0; i < states.length; i += 4) await Promise.all(states.slice(i, i + 4).map(async (expected) => tx(async db => {
+    await execute(`SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`, [`voice-permissions:${expected.userId}`], db);
+    const state = await getState(expected.userId);
+    if (state?.serverId !== serverId || state.channelId !== expected.channelId) return;
+    const access = await getAccess(serverId, state.userId, db);
+    if (!access || !has(access.perms, Perm.CONNECT)) {
+      await forceDisconnectUser(state.userId, serverId, state.channelId);
+      return;
+    }
+    const mod = await getModeration(serverId, state.userId);
+    try {
+      await applyModeration(roomName(state.channelId), state.userId, {
+        ...mod, allowSpeak: has(access.perms, Perm.SPEAK), allowVideo: has(access.perms, Perm.VIDEO),
+      });
+    } catch (err) {
+      log.warn('livekit role permissions failed; disconnecting participant', { err });
+      await forceDisconnectUser(state.userId, serverId, state.channelId);
+    }
+  })));
+}
+
 export async function setServerMute(actorId: string, serverId: string, targetId: string, patch: { serverMute?: boolean; serverDeaf?: boolean }) {
   await requirePerm(serverId, actorId, Perm.MANAGE_VOICE);
+  const next = await tx(async db => {
+  await execute(`SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`, [`voice-permissions:${targetId}`], db);
   const current = await getModeration(serverId, targetId);
   const next = { serverMute: patch.serverMute ?? current.serverMute, serverDeaf: patch.serverDeaf ?? current.serverDeaf };
   if (next.serverMute || next.serverDeaf) await redis.set(modKey(serverId, targetId), JSON.stringify(next));
   else await redis.del(modKey(serverId, targetId));
   const state = await getState(targetId);
   if (state?.serverId === serverId) {
-    const access=await getAccess(serverId,targetId);
+    const access=await getAccess(serverId,targetId,db);
     const connected=!!access&&has(access.perms,Perm.CONNECT);
     await applyModeration(roomName(state.channelId), targetId, {
       ...next,allowVideo:connected&&has(access!.perms,Perm.VIDEO),allowSpeak:connected&&has(access!.perms,Perm.SPEAK),
     }).catch((err) =>
       log.warn('livekit moderation failed', { err }),
     );
-    const updated = { ...state, ...next };
-    await redis.set(userKey(targetId), JSON.stringify(updated));
-    await emit(Ev.VoiceState, updated, { server: serverId });
+    const updated=await patchState(targetId,state.channelId,next);
+    if(updated)await emit(Ev.VoiceState, updated.after, { server: serverId });
   }
+  return next;
+  });
   await audit(serverId, actorId, AuditAction.VoiceMute, { type: 'user', id: targetId }, next);
   return next;
 }
@@ -219,6 +260,21 @@ export async function forceDisconnectUser(targetId: string, serverId: string,cha
 
 // ─────────────── LiveKit webhooks (authoritative join/leave) ───────────────
 
+/** Shared by signed webhooks and reconciliation of participants reported by the SFU. */
+export async function acceptParticipant(identity:string,channelId:string):Promise<void>{
+  try { await join(identity, channelId); }
+  catch (err) {
+    if (!(err instanceof AppError)) throw err;
+    await emit(Ev.VoiceForceDisconnect, { channelId }, { users: [identity] });
+    await removeParticipant(roomName(channelId), identity);
+    await markLeft(identity, channelId);
+    return;
+  }
+  await markJoined(identity, channelId);
+  const state = await getState(identity);
+  if (state?.serverId && state.channelId === channelId) await syncVoicePermissions(state.serverId, [identity]);
+}
+
 export async function handleWebhook(ev: WebhookEvent): Promise<void> {
   const room = ev.room?.name;
   const channelId = room ? channelFromRoom(room) : null;
@@ -226,7 +282,7 @@ export async function handleWebhook(ev: WebhookEvent): Promise<void> {
   const identity = ev.participant?.identity;
   switch (ev.event) {
     case 'participant_joined':
-      if (identity) await markJoined(identity, channelId);
+      if (identity) await acceptParticipant(identity,channelId);
       break;
     case 'participant_left':
       if (identity) await markLeft(identity, channelId);

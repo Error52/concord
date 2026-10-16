@@ -14,6 +14,19 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  containers:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - run: bash -n scripts/setup.sh scripts/install-server.sh scripts/dev-native.sh scripts/reindex-db.sh
+      - run: docker compose --env-file .env.example config --quiet
+      - run: node --test test/deployment.test.mjs
+      - run: docker build --progress=plain -t concord-frontend-ci ./frontend
+      - run: docker build --progress=plain -t concord-backend-ci ./backend
+
   frontend:
     runs-on: ubuntu-latest
     timeout-minutes: 15

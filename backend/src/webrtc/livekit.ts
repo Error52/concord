@@ -41,7 +41,7 @@ export function createJoinToken(g: JoinGrant): string {
       },
     },
     config.LIVEKIT_API_SECRET,
-    g.ttlSec ?? 6 * 3600,
+    g.ttlSec ?? 5 * 60,
   );
 }
 
@@ -82,6 +82,11 @@ export interface LkParticipant {
 export async function listParticipants(room: string): Promise<LkParticipant[]> {
   const res = await twirp<{ participants?: LkParticipant[] }>('ListParticipants', { room }, room);
   return res.participants ?? [];
+}
+
+export async function listRooms():Promise<string[]>{
+  const res=await twirp<{rooms?:{name:string}[]}>('ListRooms',{});
+  return (res.rooms??[]).map(r=>r.name);
 }
 
 export async function removeParticipant(room: string, identity: string): Promise<void> {

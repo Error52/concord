@@ -1,6 +1,8 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import net from 'node:net';
+import tls from 'node:tls';
+import {Duplex} from 'node:stream';
 import {sendMail,type SmtpOptions} from '../src/services/mailer.js';
 
 const mail={to:'test@example.com',subject:'Проверка почты',text:'Текст письма',html:'<p>Текст письма</p>'};
@@ -34,4 +36,28 @@ test('SMTP closed or rejected connection fails promptly instead of hanging or cr
   const server=await smtp(s=>s.end('421 unavailable\r\n'));
   try{await assert.rejects(sendMail(mail,server.options),/SMTP/);}
   finally{await server.close();}
+});
+
+test('SMTP refuses credentials without TLS before opening a connection',async()=>{
+ await assert.rejects(sendMail(mail,{SMTP_HOST:'127.0.0.1',SMTP_PORT:1,SMTP_USER:'secret-user',SMTP_PASSWORD:'secret-password',SMTP_TLS:false,SMTP_STARTTLS:false,MAIL_FROM:'test@example.com'}),/requires TLS/);
+});
+test('implicit TLS and STARTTLS stalled handshakes fail within the deadline',async()=>{
+ for(const implicit of [true,false]){
+  const server=await smtp(s=>{
+   if(implicit)return;
+   s.write('220 ready\r\n');s.on('data',chunk=>{const line=chunk.toString();if(line.startsWith('EHLO'))s.write('250 STARTTLS\r\n');else if(line.startsWith('STARTTLS'))s.write('220 go\r\n');});
+  });
+  const start=Date.now();
+  try{await assert.rejects(sendMail(mail,{...server.options,SMTP_TLS:implicit,SMTP_STARTTLS:!implicit,timeoutMs:150}),/timeout|closed/);assert.ok(Date.now()-start<1500);}
+  finally{await server.close();}
+ }
+});
+test('STARTTLS discards forged plaintext replies before sending credentials',async(t)=>{
+ const writes:string[]=[];
+ class SecureSocket extends Duplex{_read(){};_write(chunk:Buffer,_encoding:string,done:()=>void){writes.push(chunk.toString());done();}setTimeout(){return this;}}
+ const secure=new SecureSocket();
+ t.mock.method(tls,'connect',()=>{queueMicrotask(()=>secure.emit('secureConnect'));return secure as any;});
+ const server=await smtp(s=>{s.write('220 ready\r\n');s.on('data',chunk=>{if(chunk.toString().startsWith('EHLO'))s.write('250 STARTTLS\r\n');else if(chunk.toString().startsWith('STARTTLS'))s.write('220 go\r\n250 forged EHLO\r\n235 forged auth\r\n');});});
+ try{await assert.rejects(sendMail(mail,{...server.options,SMTP_STARTTLS:true,SMTP_USER:'user',SMTP_PASSWORD:'password',timeoutMs:100}),/timeout/);assert.ok(!writes.some(w=>w.startsWith('AUTH')));}
+ finally{await server.close();}
 });

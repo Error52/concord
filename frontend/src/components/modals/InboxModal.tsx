@@ -67,12 +67,22 @@ export function InboxModal({ onClose }: { onClose: () => void }) {
 
 export function BookmarksModal({ onClose }: { onClose: () => void }) {
   const [items, setItems] = useState<Message[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [reload, setReload] = useState(0);
+  const [removing, setRemoving] = useState<Set<string>>(() => new Set());
   useEffect(() => {
-    api.get<Message[]>('/bookmarks').then(setItems, (err) => toast(errorMessage(err), 'error'));
-  }, []);
+    let active = true;
+    setItems(null); setError(null);
+    void api.get<Message[]>('/bookmarks').then(
+      list => { if (active) setItems(list); },
+      err => { if (active) setError(errorMessage(err, 'Не удалось загрузить закладки')); },
+    );
+    return () => { active = false; };
+  }, [reload]);
   return (
     <Modal title="Закладки" subtitle="Сохранённые сообщения видны только вам." onClose={onClose} width={600}>
-      {items === null && <div className="skeleton" style={{ height: 80 }} />}
+      {items === null && !error && <div className="skeleton" style={{ height: 80 }} />}
+      {error && <div className="empty" role="alert">{error}<div style={{ marginTop: 12 }}><button className="btn btn-secondary btn-sm" onClick={() => setReload(n => n + 1)}>Повторить загрузку</button></div></div>}
       {items?.length === 0 && <div className="empty">Добавляйте сообщения в закладки через меню сообщения («…» → «В закладки»).</div>}
       {items?.map((m) => (
         <div key={m.id} className="pcard-section" style={{ background: 'var(--bg-3)' }}>
@@ -93,7 +103,13 @@ export function BookmarksModal({ onClose }: { onClose: () => void }) {
             </button>
             <button
               className="btn btn-ghost btn-sm"
-              onClick={() => void api.del(`/messages/${m.id}/bookmark`).then(() => setItems((l) => l?.filter((x) => x.id !== m.id) ?? null))}
+              disabled={removing.has(m.id)}
+              onClick={async () => {
+                setRemoving(ids => new Set(ids).add(m.id));
+                try { await api.del(`/messages/${m.id}/bookmark`); setItems(list => list?.filter(x => x.id !== m.id) ?? null); }
+                catch (err) { toast(errorMessage(err, 'Не удалось убрать закладку'), 'error'); }
+                finally { setRemoving(ids => { const next = new Set(ids); next.delete(m.id); return next; }); }
+              }}
             >
               Убрать
             </button>

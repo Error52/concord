@@ -8,7 +8,7 @@ Object.defineProperty(globalThis,'location',{value:{protocol:'http:',host:'local
 Object.defineProperty(globalThis,'history',{value:{pushState(){},replaceState(){}},configurable:true});
 const {api}=await import('../src/api/client');
 const {appStore,initialState,getState}=await import('../src/state/app');
-const {loadMessages,loadOlder,loadNewer,markRead,gateway,markNotificationsRead,clearNotifications}=await import('../src/state/actions');
+const {loadMessages,loadOlder,loadNewer,markRead,gateway,markNotificationsRead,clearNotifications,refreshServer}=await import('../src/state/actions');
 const {routerStore}=await import('../src/state/router');
 const {closeDm}=await import('../src/state/serverActions');
 const channelId='00000000-0000-4000-8000-000000000001';
@@ -16,6 +16,21 @@ const message=(id:string,content=id):Message=>({id,content,channelId,serverId:nu
 function reset(items:Message[]=[],atLatest=true){routerStore.set({route:{name:'friends'}});appStore.set({...initialState,auth:'authed',me:{id:'me'} as SelfUser,channels:{[channelId]:{id:channelId,lastMessageId:items.at(-1)?.id} as Channel},messages:{[channelId]:{items,loading:false,atLatest,hasMoreBefore:true}}});}
 function event(t:string,d:unknown){for(const fn of (gateway as any).handlers.get(t)??[])fn(d);}
 const deferred=<T>()=>{let resolve!:(v:T)=>void;const promise=new Promise<T>(r=>resolve=r);return {promise,resolve};};
+
+const fullServer=(name='Server'):any=>({server:{id:'server',name},channels:[{id:channelId,serverId:'server'}],roles:[],members:[],voiceStates:[],permissions:'1'});
+test('a late server refresh cannot resurrect a removed server',async(t)=>{
+ reset();event('server:create',fullServer());const response=deferred<any>();t.mock.method(api,'get',()=>response.promise);
+ const loading=refreshServer('server');event('server:removed',{id:'server',reason:'leave'});response.resolve(fullServer());await loading;
+ assert.equal(getState().servers.server,undefined);assert.equal(getState().permissions.server,undefined);assert.equal(getState().channels[channelId],undefined);
+});
+test('server refresh ignores older responses and a newer ready snapshot',async(t)=>{
+ reset();event('server:create',fullServer());const a=deferred<any>(),b=deferred<any>();let n=0;t.mock.method(api,'get',()=>++n===1?a.promise:b.promise);
+ const first=refreshServer('server'),second=refreshServer('server');b.resolve(fullServer('New'));await second;a.resolve(fullServer('Old'));await first;
+ assert.equal(getState().servers.server!.name,'New');
+ const stale=deferred<any>();t.mock.method(api,'get',()=>stale.promise);const loading=refreshServer('server');
+ event('ready',{user:{id:'me'},dms:[],relationships:[],readStates:[],notifications:{items:[],unread:0},incomingCalls:[],features:{gif:{enabled:false}},servers:[],dmVoiceStates:[],voiceState:null});
+ stale.resolve(fullServer());await loading;assert.equal(getState().servers.server,undefined);
+});
 
 test('a superseded history request cannot replace a newer window',async(t)=>{
  reset();const old=deferred<Message[]>(),fresh=deferred<Message[]>();let calls=0;
@@ -89,6 +104,13 @@ test('clearing notifications removes only rows actually deleted by the server',a
  t.mock.method(api,'del',()=>response.promise);const clearing=clearNotifications();event('notification:new',notification('new'));
  response.resolve({ids:['old'],unreadChanged:1});await clearing;
  assert.deepEqual(getState().notifications.map(n=>n.id),['new']);assert.equal(getState().unreadNotifications,1);
+});
+
+test('notification read and clear synchronize across gateways and HTTP without double subtraction',async(t)=>{
+ reset();appStore.set({notifications:[notification('old')],unreadNotifications:1});
+ const result={mutationId:'cross-tab-read',ids:['old'],unreadChanged:1};t.mock.method(api,'post',async()=>{event('notification:read',result);event('notification:read',result);event('notification:new',notification('new'));return result;});
+ await markNotificationsRead();assert.equal(getState().unreadNotifications,1);assert.equal(getState().notifications.find(n=>n.id==='old')!.read,true);
+ event('notification:clear',{mutationId:'cross-tab-clear',ids:['old'],unreadChanged:0});assert.deepEqual(getState().notifications.map(n=>n.id),['new']);assert.equal(getState().unreadNotifications,1);
 });
 test('failed notification mutations preserve visible notifications and their counters',async(t)=>{
  reset();appStore.set({notifications:[notification('old')],unreadNotifications:1});t.mock.method(api,'post',async()=>{throw new Error('offline');});

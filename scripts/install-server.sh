@@ -8,8 +8,7 @@
 #   Локальный сервер (дома/в офисе, заходят с устройств в той же сети):
 #     sudo ./scripts/install-server.sh --lan                # → https://<IP-в-сети>:8443
 #
-#   --reconfigure   пересоздать .env (новые секреты; данные в базе сохраняются только если пароль БД не менялся —
-#                   поэтому для уже работающей установки используйте его вместе с 'make clean')
+#   --reconfigure   пересоздать .env для новой установки; существующая база требует сохранения секретов
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -52,34 +51,13 @@ if [ "$MODE" = "server" ]; then
   if [ -n "$PUBLIC_IP" ] && ! printf ' %s ' "$LOCAL_IPS" | grep -q " $PUBLIC_IP "; then
     warn "Этот компьютер находится за NAT: его адрес в сети ($LOCAL_IPS) не совпадает с внешним IP ($PUBLIC_IP)."
     warn "Чтобы заходили из интернета, на роутере нужно пробросить на этот компьютер порты:"
-    warn "  TCP 80, 443, 7881, 3478 и UDP 443, 7882, 3478, 49160-49200 — и чтобы провайдер дал «белый» IP."
+    warn "  TCP 80/443, TURN 3478 и 49160-49200/UDP, а также медиа-порты из .env — и нужен «белый» IP."
     warn "Для проверки внутри своей сети проще режим LAN:  sudo $0 --lan"
     printf '  Продолжить установку для доступа из интернета? [y/N] '
     read -r ans </dev/tty || ans=n
     case "$ans" in y|Y|д|Д) ;; *) echo "  Остановлено. Для локальной сети: sudo $0 --lan"; exit 0 ;; esac
   fi
 fi
-
-say "Firewall"
-PORTS_TCP="80 443 7881 3478"
-PORTS_UDP="443 7882 3478"
-[ "$MODE" = "lan" ] && PORTS_TCP="8443 7881 3478" && PORTS_UDP="7882 3478"
-if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q "Status: active"; then
-  ufw allow OpenSSH >/dev/null || true
-  for p in $PORTS_TCP; do ufw allow "$p/tcp" >/dev/null; done
-  for p in $PORTS_UDP; do ufw allow "$p/udp" >/dev/null; done
-  ufw allow 49160:49200/udp >/dev/null
-  echo "  ufw: порты открыты"
-elif command -v firewall-cmd >/dev/null 2>&1 && firewall-cmd --state >/dev/null 2>&1; then
-  for p in $PORTS_TCP; do firewall-cmd --permanent --add-port="$p/tcp" >/dev/null; done
-  for p in $PORTS_UDP; do firewall-cmd --permanent --add-port="$p/udp" >/dev/null; done
-  firewall-cmd --permanent --add-port=49160-49200/udp >/dev/null
-  firewall-cmd --reload >/dev/null
-  echo "  firewalld: порты открыты"
-else
-  echo "  ufw/firewalld не активны — на этой машине менять нечего."
-fi
-[ "$MODE" = "server" ] && echo "  У облачного провайдера (security group / firewall в панели) откройте: TCP $PORTS_TCP · UDP $PORTS_UDP 49160-49200"
 
 say "Настройки (.env)"
 WANT_PROFILE=server
@@ -89,13 +67,15 @@ if [ -f .env ] && [ "$RECONF" != "1" ]; then
   if [ "$HAVE_PROFILE" != "$WANT_PROFILE" ]; then
     warn "Найден .env для другого режима (COMPOSE_PROFILES=$HAVE_PROFILE), нужен $WANT_PROFILE."
     if docker volume ls -q 2>/dev/null | grep -q '^concord_pgdata$'; then
-      warn "Уже есть база данных (том concord_pgdata) со старым паролем. Чтобы начать с нуля: 'docker compose down -v', затем:"
-      die "sudo $0 --reconfigure $*"
+      die "Уже есть база concord_pgdata. Сохраните секреты .env; смените сетевые настройки и COMPOSE_PROFILES вручную по docs/UPGRADING.md."
     fi
     RECONF=1
   else
     echo "  .env уже настроен для этого режима — оставляю как есть."
   fi
+fi
+if [ "$RECONF" = 1 ] && docker volume ls -q | grep -q '^concord_pgdata$'; then
+  die "Нельзя пересоздавать секреты для существующей базы. Сохраните .env и следуйте docs/UPGRADING.md."
 fi
 if [ ! -f .env ] || [ "$RECONF" = "1" ]; then
   if [ "$MODE" = "lan" ]; then
@@ -108,6 +88,47 @@ if [ ! -f .env ] || [ "$RECONF" = "1" ]; then
     ./scripts/setup.sh "$@"
   fi
 fi
+
+setting() { sed -n "s/^$1=//p" .env | tail -n 1; }
+TCP_MEDIA="$(setting LIVEKIT_TCP_PORT)"; TCP_MEDIA="${TCP_MEDIA:-7881}"
+UDP_MEDIA="$(setting LIVEKIT_UDP_PORT)"; UDP_MEDIA="${UDP_MEDIA:-7882}"
+HTTPS_BIND="$(setting HTTPS_PORT)"; HTTPS_BIND="${HTTPS_BIND:-8443}"
+for p in "$TCP_MEDIA" "$UDP_MEDIA" "$HTTPS_BIND"; do
+  case "$p" in ''|*[!0-9]*) die "Некорректный порт в .env" ;; esac
+  [ "$p" -gt 0 ] && [ "$p" -lt 65536 ] || die "Порт должен быть от 1 до 65535"
+done
+if [ "$MODE" = server ] && [ "$(setting REQUIRE_EMAIL_VERIFICATION)" != false ] && [ "$(setting REQUIRE_EMAIL_VERIFICATION)" != 0 ]; then
+  SMTP="$(setting SMTP_HOST)"
+  [ -n "$SMTP" ] && [ "$SMTP" != mailpit ] || die "Настройте SMTP_HOST, SMTP_PORT, MAIL_FROM и SMTP_TLS/SMTP_STARTTLS в .env, затем повторите установку. Для локальной демо-почты используйте --lan."
+fi
+# Preserve the image family of a running/previous installation before pulling a new image.
+if [ -z "$(setting POSTGRES_IMAGE)" ]; then
+  OLD_PG="$(docker ps -a --filter label=com.docker.compose.project=concord --filter label=com.docker.compose.service=postgres --format '{{.ID}}' | head -n 1)"
+  if [ -n "$OLD_PG" ]; then
+    OLD_IMAGE="$(docker inspect --format '{{.Config.Image}}' "$OLD_PG")"
+    printf '\nPOSTGRES_IMAGE=%s\n' "$OLD_IMAGE" >> .env
+  elif docker volume ls -q | grep -q '^concord_pgdata$'; then
+    die "Найден существующий pgdata без информации об образе. Задайте исходный POSTGRES_IMAGE в .env; порядок безопасного обновления — docs/UPGRADING.md."
+  else
+    printf '\nPOSTGRES_IMAGE=postgres:16-bookworm\n' >> .env
+  fi
+fi
+
+say "Firewall"
+PORTS_TCP="80 443 $TCP_MEDIA 3478"; PORTS_UDP="443 $UDP_MEDIA 3478"
+[ "$MODE" = lan ] && PORTS_TCP="$HTTPS_BIND $TCP_MEDIA 3478" && PORTS_UDP="$UDP_MEDIA 3478"
+if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q "Status: active"; then
+  ufw allow OpenSSH >/dev/null || true
+  for p in $PORTS_TCP; do ufw allow "$p/tcp" >/dev/null; done
+  for p in $PORTS_UDP; do ufw allow "$p/udp" >/dev/null; done
+  ufw allow 49160:49200/udp >/dev/null
+elif command -v firewall-cmd >/dev/null 2>&1 && firewall-cmd --state >/dev/null 2>&1; then
+  for p in $PORTS_TCP; do firewall-cmd --permanent --add-port="$p/tcp" >/dev/null; done
+  for p in $PORTS_UDP; do firewall-cmd --permanent --add-port="$p/udp" >/dev/null; done
+  firewall-cmd --permanent --add-port=49160-49200/udp >/dev/null
+  firewall-cmd --reload >/dev/null
+fi
+[ "$MODE" = server ] && echo "  Firewall провайдера: TCP $PORTS_TCP · UDP $PORTS_UDP 49160-49200"
 
 say "Загрузка образов"
 if ! docker compose pull --ignore-buildable; then

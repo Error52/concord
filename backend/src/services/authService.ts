@@ -87,10 +87,10 @@ export async function register(input: RegisterInput, client: ClientInfo, verifie
     // Serialize the first-admin decision across concurrent registrations.
     await queryOne(`SELECT pg_advisory_xact_lock(727275)`, [], db);
     const u = await queryOne<{ id: string }>(
-      // The very first account on a fresh install becomes the platform admin (plus anyone in PLATFORM_ADMIN_EMAILS).
+      // The first account bootstraps local administration; email allowlists require real verification later.
       `INSERT INTO users (email, username, display_name, password_hash, is_platform_admin, email_verified_at)
        VALUES ($1, $2, $3, $4, $5 OR NOT EXISTS (SELECT 1 FROM users), CASE WHEN $6 THEN now() END) RETURNING id`,
-      [input.email.trim().toLowerCase(), input.username.trim(), input.displayName?.trim() || null, passwordHash, platformAdminEmails.includes(input.email.trim().toLowerCase()), verifiedSeed],
+      [input.email.trim().toLowerCase(), input.username.trim(), input.displayName?.trim() || null, passwordHash, false, verifiedSeed],
       db,
     );
     await execute(
@@ -304,6 +304,9 @@ export async function resendEmailVerification(userId:string):Promise<void> {
 
 export async function confirmEmail(token:string):Promise<{userId:string}> {
   return tx(async(db)=>{
+    // Resend locks users before verification rows. Confirmation must use the same order.
+    const candidate=await queryOne<{user_id:string}>(`SELECT user_id FROM email_verifications WHERE token_hash=$1`,[sha256(token)],db);
+    if(candidate)await queryOne(`SELECT id FROM users WHERE id=$1 FOR UPDATE`,[candidate.user_id],db);
     const row=await queryOne<{user_id:string}>(`UPDATE email_verifications SET used_at=now()
       WHERE token_hash=$1 AND used_at IS NULL AND expires_at>now() RETURNING user_id`,[sha256(token)],db);
     if(!row){
@@ -312,7 +315,9 @@ export async function confirmEmail(token:string):Promise<{userId:string}> {
       if(confirmed)return {userId:confirmed.user_id};
       throw new AppError(400,'VERIFY_INVALID','Ссылка недействительна или устарела. Запросите новое письмо.');
     }
-    await execute(`UPDATE users SET email_verified_at=coalesce(email_verified_at,now()),updated_at=now() WHERE id=$1`,[row.user_id],db);
+    await execute(`UPDATE users SET email_verified_at=coalesce(email_verified_at,now()),
+      email_verified_via_smtp=email_verified_via_smtp OR $2::boolean,
+      is_platform_admin=is_platform_admin OR ($2::boolean AND lower(email)=ANY($3::text[])),updated_at=now() WHERE id=$1`,[row.user_id,!config.DEMO_MAILBOX,platformAdminEmails],db);
     return {userId:row.user_id};
   });
 }

@@ -72,11 +72,23 @@ function removeServer(s: AppState, sid: string): Partial<AppState> {
   const { [sid]: _s, ...servers } = s.servers;
   const { [sid]: _r, ...roles } = s.roles;
   const { [sid]: _m, ...members } = s.members;
+  const { [sid]: _p, ...permissions } = s.permissions;
+  const channelIds = new Set(Object.values(s.channels).filter(c => c.serverId === sid).map(c => c.id));
   const channels = Object.fromEntries(Object.entries(s.channels).filter(([, c]) => c.serverId !== sid));
-  return { servers, roles, members, channels, serverOrder: s.serverOrder.filter((id) => id !== sid) };
+  const messages = Object.fromEntries(Object.entries(s.messages).filter(([id]) => !channelIds.has(id)));
+  const readStates = Object.fromEntries(Object.entries(s.readStates).filter(([id]) => !channelIds.has(id)));
+  const typing = Object.fromEntries(Object.entries(s.typing).filter(([id]) => !channelIds.has(id)));
+  const voiceStates = Object.fromEntries(Object.entries(s.voiceStates).filter(([,vs]) => vs.serverId !== sid));
+  const speaking = Object.fromEntries(Object.entries(s.speaking).filter(([uid]) => s.voiceStates[uid]?.serverId !== sid));
+  return { servers, roles, members, permissions, channels, messages, readStates, typing, voiceStates, speaking, serverOrder: s.serverOrder.filter((id) => id !== sid) };
 }
 
+let serverSnapshotGeneration = 0;
+const serverRefreshes = new Map<string, number>();
+
 function onReady(d: ReadyPayload): void {
+  ++serverSnapshotGeneration;
+  serverRefreshes.clear();
   ++notificationGeneration;
   setState((s) => {
     let next: AppState = {
@@ -195,6 +207,7 @@ function patchMessage(channelId: string, id: string, fn: (m: Message) => Message
 }
 
 function onNotification(n: Notification): void {
+  if(getState().notifications.some(item=>item.id===n.id))return;
   setState((s) => ({ notifications: [n, ...s.notifications].slice(0, 100), unreadNotifications: s.unreadNotifications + 1 }));
   const me = getState().me;
   if (me?.chosenStatus === 'dnd') return;
@@ -208,14 +221,25 @@ function onNotification(n: Notification): void {
 }
 
 let notificationGeneration=0;
-interface NotificationMutation {ids:string[];unreadChanged:number}
+interface NotificationMutation {mutationId?:string;ids:string[];unreadChanged:number}
+const notificationMutations=new Set<string>();
+function applyNotificationMutation(result:NotificationMutation,clear:boolean):void{
+  if(result.mutationId){
+    if(notificationMutations.has(result.mutationId))return;
+    notificationMutations.add(result.mutationId);
+    if(notificationMutations.size>512)notificationMutations.delete(notificationMutations.values().next().value!);
+  }
+  const ids=new Set(result.ids);
+  setState(s=>({notifications:clear?s.notifications.filter(n=>!ids.has(n.id)):s.notifications.map(n=>ids.has(n.id)?{...n,read:true}:n),
+    unreadNotifications:Math.max(0,s.unreadNotifications-result.unreadChanged)}));
+}
+gateway.on('notification:read',(result:NotificationMutation)=>applyNotificationMutation(result,false));
+gateway.on('notification:clear',(result:NotificationMutation)=>applyNotificationMutation(result,true));
 async function mutateNotifications(clear:boolean):Promise<void>{
   const generation=notificationGeneration;
   const result=await (clear?api.del<NotificationMutation>('/notifications'):api.post<NotificationMutation>('/notifications/read',{ids:'all'}));
   if(generation!==notificationGeneration)return;
-  const ids=new Set(result.ids);
-  setState(s=>({notifications:clear?s.notifications.filter(n=>!ids.has(n.id)):s.notifications.map(n=>ids.has(n.id)?{...n,read:true}:n),
-    unreadNotifications:Math.max(0,s.unreadNotifications-result.unreadChanged)}));
+  applyNotificationMutation(result,clear);
 }
 export const markNotificationsRead=():Promise<void>=>mutateNotifications(false);
 export const clearNotifications=():Promise<void>=>mutateNotifications(true);
@@ -347,6 +371,7 @@ export function dismissCall(channelId: string): void {
 }
 
 function leaveServerLocal(serverId: string, message: string | null): void {
+  serverRefreshes.set(serverId, (serverRefreshes.get(serverId) ?? 0) + 1);
   setState((s) => removeServer(s, serverId));
   if (message) toast(message, 'info');
   const r = routerStore.get().route;
@@ -354,8 +379,12 @@ function leaveServerLocal(serverId: string, message: string | null): void {
 }
 
 export async function refreshServer(serverId: string): Promise<void> {
+  const request = (serverRefreshes.get(serverId) ?? 0) + 1;
+  serverRefreshes.set(serverId, request);
+  const snapshot = serverSnapshotGeneration, userId = getState().me?.id;
   try {
     const full = await api.get<FullServer>(`/servers/${serverId}`);
+    if (serverRefreshes.get(serverId) !== request || snapshot !== serverSnapshotGeneration || getState().me?.id !== userId) return;
     setState((s) => applyFullServer(s, full));
   } catch {
     /* removed or offline */

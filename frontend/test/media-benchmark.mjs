@@ -17,14 +17,26 @@ const result={source:'synthetic 1920x1080 canvas at 60 fps + stereo 220/880 Hz t
 let a,b;
 async function login(email,capture=false) {
  const context=await browser.newContext({viewport:{width:1440,height:900},permissions:['microphone','camera']});
- await context.addInitScript(({capture,quality,motion})=>{
+ await context.addInitScript(({capture,quality,motion,onlyVp8})=>{
   localStorage.setItem('concord.settings.v1',JSON.stringify({streamQuality:quality,...(capture?{inputDeviceId:'concord-unplugged-test-device'}:{})}));
   const NativePC=window.RTCPeerConnection,NativeAudio=window.AudioContext;
+  const vp8Only=description=>{
+   const sections=description.sdp.split(/(?=^m=)/m).map(section=>{
+    if(!section.startsWith('m=video'))return section;
+    const lines=section.split('\r\n'),disabled=new Set();
+    for(const line of lines){const codec=/^a=rtpmap:(\d+) (H264|H265|VP9|AV1)\//i.exec(line);if(codec)disabled.add(codec[1]);}
+    for(const line of lines){const rtx=/^a=fmtp:(\d+) .*apt=(\d+)/.exec(line);if(rtx&&disabled.has(rtx[2]))disabled.add(rtx[1]);}
+    lines[0]=lines[0].split(' ').filter((part,i)=>i<3||!disabled.has(part)).join(' ');
+    return lines.filter(line=>{const payload=/^a=(?:rtpmap|fmtp|rtcp-fb):(\d+)/.exec(line);return !payload||!disabled.has(payload[1]);}).join('\r\n');
+   });return {type:description.type,sdp:sections.join('')};
+  };
   window.__mediaPeers=[];window.__mediaContexts=[];window.__mediaCaptures=[];window.__mediaRemoteCandidates=[];
   const NativeSocket=window.WebSocket;window.__mediaSockets=[];
   window.WebSocket=class extends NativeSocket{constructor(...args){super(...args);window.__mediaSockets.push(this);}};
   window.RTCPeerConnection=class extends NativePC{
    constructor(...args){super(...args);window.__mediaPeers.push(this);}
+   async createOffer(...args){const d=await super.createOffer(...args);return onlyVp8?vp8Only(d):d;}
+   async createAnswer(...args){const d=await super.createAnswer(...args);return onlyVp8?vp8Only(d):d;}
    addIceCandidate(candidate){if(candidate?.candidate)window.__mediaRemoteCandidates.push(candidate.candidate);return super.addIceCandidate(candidate);}
   };
   window.AudioContext=class extends NativeAudio{constructor(...args){super(...args);window.__mediaContexts.push(this);}};
@@ -70,7 +82,7 @@ async function login(email,capture=false) {
    if(delay)await new Promise(r=>setTimeout(r,delay));
    return stream;
   };
- },{capture,quality:QUALITY,motion:MOTION});
+ },{capture,quality:QUALITY,motion:MOTION,onlyVp8:!capture&&process.env.FORCE_VP8_RECEIVER==='1'});
  const page=await context.newPage();page.on('pageerror',e=>result.errors.push(e.message.slice(0,250)));
  await page.goto(`${BASE}/login`);await page.getByLabel('Email').fill(email);await page.getByLabel('Пароль').fill('demo12345');
  await page.getByRole('button',{name:'Войти',exact:true}).click();await page.getByRole('button',{name:'Demo Server',exact:true}).first().click();
@@ -98,6 +110,24 @@ try {
  const start=Date.now();await a.locator('.stage-controls').getByRole('button',{name:'Демонстрация экрана',exact:true}).click();
  await b.waitForFunction(()=>document.querySelector('.tile.screen video')?.readyState>=2);
  result.firstFrameMs=Date.now()-start;
+ if(process.env.EXPECT_FULL_RECONNECT==='1'){
+  await a.locator('.stage-controls').getByRole('button',{name:'Камера',exact:true}).click();
+  await a.waitForFunction(()=>window.__concordTestVoiceStore?.get().camera===true);
+  await a.evaluate(async()=>{
+   const room=window.__concordTestVoice.room;
+   await new Promise(async(resolve,reject)=>{const timer=setTimeout(()=>reject(new Error('Full reconnect did not finish')),20000);room.once('reconnected',()=>{clearTimeout(timer);resolve();});await room.simulateScenario('full-reconnect');});
+  });
+  await a.waitForFunction(()=>{const v=window.__concordTestVoiceStore.get();return v.status==='connected'&&v.screen&&v.camera;},null,{timeout:15000});
+  await b.waitForFunction(()=>document.querySelector('.tile.screen video')?.readyState>=2);
+  assert.ok(await a.evaluate(()=>{
+   const publications=window.__concordTestVoice.room.localParticipant.trackPublications;
+   return ['screen_share','camera','microphone'].every(source=>[...publications.values()].some(p=>p.source===source&&p.track?.mediaStreamTrack.readyState==='live'));
+  }),'full reconnect restores live screen, camera and microphone publications');
+  const beforeReconnectSample=await rtc(b);await b.waitForTimeout(1200);const afterReconnectSample=await rtc(b);
+  assert.ok(afterReconnectSample.some(r=>r.type==='inbound-rtp'&&r.kind==='video'&&r.width>=1280&&r.frames>(beforeReconnectSample.find(o=>o.ssrc===r.ssrc)?.frames??0)+5),'the receiver decodes new screen frames after full reconnect');
+  result.fullReconnectMedia=true;
+  await a.locator('.stage-controls').getByRole('button',{name:'Камера',exact:true}).click();
+ }
  result.latency=await b.locator('.tile.screen video').evaluate(v=>new Promise((resolve,reject)=>{
   const canvas=document.createElement('canvas');canvas.width=448;canvas.height=40;
   const ctx=canvas.getContext('2d',{willReadFrequently:true});const delays=[];let callbacks=0,invalid=0;
@@ -119,6 +149,10 @@ try {
   };v.requestVideoFrameCallback(next);
  }));
  result.publisher=await rtc(a);result.receiver=await rtc(b);
+ if(process.env.FORCE_VP8_RECEIVER==='1'){
+  assert.ok(result.receiver.some(r=>r.kind==='video'&&r.width>=640&&r.frames>180&&r.codec?.toLowerCase()==='video/vp8'),'a VP8-only receiver gets sustained decoded screen frames');
+  result.vp8OnlyReceiver=true;
+ }
  result.transport=await b.evaluate(async()=>{
   const rows=[];for(const pc of window.__mediaPeers){const s=await pc.getStats();for(const r of s.values()){
    if(r.type==='candidate-pair'&&r.state==='succeeded'&&r.nominated){const remote=s.get(r.remoteCandidateId);rows.push({remoteAddress:remote?.address,remotePort:remote?.port,protocol:remote?.protocol,remoteType:remote?.candidateType});}
@@ -134,7 +168,8 @@ try {
  }
  assert.ok(result.latency.samples>=30 && result.latency.invalid<result.latency.samples*.1,'frame timestamp survives encoding');
  assert.ok(result.latency.p95Ms<500,'local source-to-display p95 below 500 ms');
- assert.ok(result.latency.width>=1280 && result.latency.height>=720,'received video remains HD');
+ const minimum=process.env.FORCE_VP8_RECEIVER==='1'?{width:640,height:360}:{width:1280,height:720};
+ assert.ok(result.latency.width>=minimum.width && result.latency.height>=minimum.height,'received video remains above the scenario resolution floor');
  if(QUALITY==='720p30')assert.ok(result.latency.width<=1280 && result.latency.height<=720,'720p mode caps actual encoded pixels even if capture ignores ideal dimensions');
  if(QUALITY.startsWith('1080p'))assert.ok(result.latency.width<=1920 && result.latency.height<=1080,'1080p mode caps actual encoded pixels');
  assert.ok(result.receiver.some(r=>r.kind==='video'&&r.frames>(QUALITY==='text'?90:180)),'sustained video decoded');

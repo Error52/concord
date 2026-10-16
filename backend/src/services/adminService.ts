@@ -1,6 +1,6 @@
 import { execute, query, queryOne } from '../db/pool.js';
 import { Errors } from '../http/errors.js';
-import { platformAdminEmails } from '../config.js';
+import { config,platformAdminEmails } from '../config.js';
 import { loadPublicUsers, toBadge } from '../repositories/userRepo.js';
 import { mediaUrl } from '../storage/index.js';
 import { deleteMedia, storeProcessedImage } from './mediaService.js';
@@ -26,8 +26,8 @@ export async function requirePlatformAdmin(userId: string): Promise<void> {
 
 /** Makes every email from PLATFORM_ADMIN_EMAILS an admin (run at startup). */
 export async function syncPlatformAdmins(): Promise<void> {
-  if (platformAdminEmails.length === 0) return;
-  const n = await execute(`UPDATE users SET is_platform_admin = true WHERE lower(email) = ANY($1::text[]) AND NOT is_platform_admin`, [platformAdminEmails]);
+  if (platformAdminEmails.length === 0 || config.DEMO_MAILBOX) return;
+  const n = await execute(`UPDATE users SET is_platform_admin = true WHERE lower(email) = ANY($1::text[]) AND email_verified_via_smtp AND NOT is_platform_admin`, [platformAdminEmails]);
   if (n > 0) log.info('platform admins granted from PLATFORM_ADMIN_EMAILS', { count: n });
 }
 

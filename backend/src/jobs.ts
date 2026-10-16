@@ -1,8 +1,8 @@
 import { cleanupOrphans } from './services/attachmentService.js';
 import { execute, query } from './db/pool.js';
 import { redis } from './redis.js';
-import { listParticipants } from './webrtc/livekit.js';
-import { markLeft, markJoined } from './services/voiceService.js';
+import { listParticipants,listRooms } from './webrtc/livekit.js';
+import { markLeft,acceptParticipant } from './services/voiceService.js';
 import { log } from './logger.js';
 import { deliverPendingMail } from './services/mailOutbox.js';
 
@@ -30,9 +30,10 @@ async function scanKeys(pattern: string): Promise<string[]> {
 }
 
 /** Reconciles Redis voice occupancy with what the SFU actually has (covers missed webhooks). */
-async function reconcileVoice(): Promise<void> {
+export async function reconcileVoice(): Promise<void> {
   const keys = await scanKeys('voice:room:*');
-  for (const key of keys) {
+  const rooms=await listRooms();
+  for (const key of new Set([...keys,...rooms.filter(r=>/^ch_[0-9a-f-]{36}$/.test(r)).map(r=>`voice:room:${r.slice(3)}`)])) {
     const channelId = key.slice('voice:room:'.length);
     let identities: Set<string>;
     try {
@@ -42,7 +43,7 @@ async function reconcileVoice(): Promise<void> {
     }
     const tracked = await redis.smembers(key);
     for (const userId of tracked) if (!identities.has(userId)) await markLeft(userId, channelId);
-    for (const userId of identities) if (!tracked.includes(userId)) await markJoined(userId, channelId);
+    for (const userId of identities) await acceptParticipant(userId, channelId);
   }
 }
 

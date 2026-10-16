@@ -1,0 +1,9 @@
+{
+  "checks": [
+    "removed attachment releases its preview",
+    "failed send retains attachments and a newly typed draft; retry succeeds",
+    "leaving a channel aborts the pending upload and releases its preview",
+    "switching accounts does not expose the former account draft"
+  ],
+  "errors": []
+}

@@ -1,0 +1,23 @@
+PASS bookmarks load failure stops the skeleton and retries successfully
+PASS failed bookmark removal keeps the item and can be retried
+PASS rapid sends queue in order while the first response is delayed
+PASS search pagination retains the current page while loading the next
+PASS thread images open in the shared viewer and Escape keeps the thread open
+PASS late server response cannot restore a deleted server in the sidebar
+PASS notification read and clear from another tab update the open inbox
+PASS revoking voice sources releases captures, restoring SPEAK republishes, CONNECT removal disconnects
+{
+  "browser": "155.0.8059.80",
+  "checks": [
+    "bookmarks load failure stops the skeleton and retries successfully",
+    "failed bookmark removal keeps the item and can be retried",
+    "rapid sends queue in order while the first response is delayed",
+    "search pagination retains the current page while loading the next",
+    "thread images open in the shared viewer and Escape keeps the thread open",
+    "late server response cannot restore a deleted server in the sidebar",
+    "notification read and clear from another tab update the open inbox",
+    "revoking voice sources releases captures, restoring SPEAK republishes, CONNECT removal disconnects"
+  ],
+  "failures": [],
+  "errors": []
+}

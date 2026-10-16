@@ -2,8 +2,14 @@
 FROM node:24-bookworm-slim AS build
 WORKDIR /app
 COPY package.json pnpm-lock.yaml ./
+ARG NPM_REGISTRY=https://registry.npmjs.org
+ENV COREPACK_NPM_REGISTRY=$NPM_REGISTRY
 RUN corepack enable && corepack prepare pnpm@11.25.0 --activate
-RUN pnpm install --frozen-lockfile --ignore-scripts --config.node-linker=hoisted
+RUN --mount=type=cache,id=concord-backend-pnpm,target=/pnpm/store \
+    pnpm install --frozen-lockfile --ignore-scripts --config.node-linker=hoisted \
+    --store-dir=/pnpm/store --registry="$NPM_REGISTRY" \
+    --network-concurrency=4 --fetch-timeout=300000 --fetch-retries=5 \
+    --fetch-retry-mintimeout=10000 --fetch-retry-maxtimeout=60000
 COPY tsconfig.json build.mjs ./
 COPY src ./src
 RUN npm run build
@@ -14,7 +20,9 @@ COPY test ./test
 CMD ["node", "--import", "tsx", "--test", "--test-force-exit", "--test-concurrency=1", "test/*.test.ts"]
 
 FROM build AS production-dependencies
-RUN pnpm prune --prod --ignore-scripts --config.node-linker=hoisted
+RUN --mount=type=cache,id=concord-backend-pnpm,target=/pnpm/store \
+    pnpm prune --prod --ignore-scripts --config.node-linker=hoisted --store-dir=/pnpm/store \
+    --registry="$NPM_REGISTRY" --network-concurrency=4 --fetch-timeout=300000 --fetch-retries=5
 
 FROM node:24-bookworm-slim AS runtime
 ENV NODE_ENV=production

@@ -48,12 +48,13 @@ export function SearchModal({ serverId, channelId, onClose }: { serverId: string
 
   useEffect(() => {
     let current=true;
-    setQuick(null);setResults(null);setError(null);setLoading(false);
+    setError(null);setLoading(true);
     const t = setTimeout(async () => {
       if (q.trim() && scope === 'all') api.get<Quick>(`/search?q=${encodeURIComponent(q.trim())}`).then(d=>{if(current)setQuick(d);}, () => {if(current)setQuick(null);});
       else setQuick(null);
       if (!q.trim() && !authorId && !has.length && !before && !after) {
         setResults(null);
+        setQuick(null);setLoading(false);
         return;
       }
       const params = new URLSearchParams();
@@ -176,7 +177,7 @@ export function SearchModal({ serverId, channelId, onClose }: { serverId: string
           </div>
           {results.results.length === 0 && <p className="muted">Ничего не найдено.</p>}
           {results.results.map((m) => (
-            <button key={m.id} className="pcard-section" style={{ textAlign: 'left', background: 'var(--bg-3)', border: '1px solid var(--border)' }} onClick={() => jump(m)}>
+            <button key={m.id} className="pcard-section" aria-busy={loading} style={{ textAlign: 'left', background: 'var(--bg-3)', border: '1px solid var(--border)' }} onClick={() => {if(!loading)jump(m);}}>
               <div className="row" style={{ fontSize: '0.8125rem', marginBottom: 4 }}>
                 <Avatar user={m.author} size={20} />
                 <strong style={{ color: 'var(--text-0)' }}>{displayName(getState(), m.author, m.serverId)}</strong>
@@ -189,13 +190,13 @@ export function SearchModal({ serverId, channelId, onClose }: { serverId: string
           ))}
           {results.total > PAGE && (
             <div className="row" style={{ justifyContent: 'center' }}>
-              <button className="btn btn-secondary btn-sm" disabled={offset === 0} onClick={() => setOffset(Math.max(0, offset - PAGE))}>
+              <button className="btn btn-secondary btn-sm" disabled={loading || offset === 0} onClick={() => setOffset(Math.max(0, offset - PAGE))}>
                 ← Назад
               </button>
               <span className="muted" style={{ fontSize: '0.8125rem' }}>
                 {offset / PAGE + 1} / {Math.ceil(Math.min(results.total, 1000) / PAGE)}
               </span>
-              <button className="btn btn-secondary btn-sm" disabled={offset + PAGE >= Math.min(results.total, 1000)} onClick={() => setOffset(offset + PAGE)}>
+              <button className="btn btn-secondary btn-sm" disabled={loading || offset + PAGE >= Math.min(results.total, 1000)} onClick={() => setOffset(offset + PAGE)}>
                 Далее →
               </button>
             </div>

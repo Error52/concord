@@ -28,6 +28,8 @@ export const Ev = {
   ScreenStart: 'screen:start',
   ScreenStop: 'screen:stop',
   NotificationNew: 'notification:new',
+  NotificationRead: 'notification:read',
+  NotificationClear: 'notification:clear',
   ServerCreate: 'server:create',
   ServerUpdate: 'server:update',
   ServerDelete: 'server:delete',

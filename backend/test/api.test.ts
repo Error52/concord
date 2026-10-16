@@ -4,25 +4,29 @@ import sharp from 'sharp';
 import { startServer, Client, connectGateway, sleep, type Harness } from './helpers.js';
 import { hotp, base32Decode } from '../src/auth/totp.js';
 import { verifyJwt, signJwt } from '../src/auth/jwt.js';
-import { config } from '../src/config.js';
+import { config,platformAdminEmails,validateMailConfiguration } from '../src/config.js';
 import { pool } from '../src/db/pool.js';
 import { createHash } from 'node:crypto';
-import { deliverPendingMail } from '../src/services/mailOutbox.js';
+import { deliverPendingMail,protectQueuedMail,clearInvalidMail } from '../src/services/mailOutbox.js';
+import {syncPlatformAdmins} from '../src/services/adminService.js';
+import {reconcileVoice} from '../src/jobs.js';
 import {captureSmtp} from './smtpCapture.js';
 import {createServer} from 'node:http';
-import {markJoined,markLeft,forceDisconnectUser} from '../src/services/voiceService.js';
+import {markJoined,markLeft,forceDisconnectUser,handleWebhook,updateSelfState} from '../src/services/voiceService.js';
 import {Perm} from '../src/models/permissions.js';
 import {pendingRings} from '../src/services/callService.js';
 import {redis} from '../src/redis.js';
 import {react} from '../src/services/messageService.js';
 import {notify} from '../src/services/notificationService.js';
+import {resendEmailVerification,confirmEmail} from '../src/services/authService.js';
+import {openMail} from '../src/services/mailCrypto.js';
 
 let h: Harness;
 const c = (): Client => new Client(h.base);
 
-async function withLiveKitCapture(fn:(calls:{method:string;room:string;identity:string}[])=>Promise<void>){
+async function withLiveKitCapture(fn:(calls:{method:string;room:string;identity:string}[])=>Promise<void>,responses:Record<string,unknown>={}){
  const calls:{method:string;room:string;identity:string}[]=[];
- const fake=createServer(async(req,res)=>{let body='';for await(const chunk of req)body+=chunk;calls.push({method:req.url!.split('/').at(-1)!,...JSON.parse(body)});res.setHeader('Content-Type','application/json');res.end('{}');});
+ const fake=createServer(async(req,res)=>{let body='';for await(const chunk of req)body+=chunk;const method=req.url!.split('/').at(-1)!;calls.push({method,...JSON.parse(body)});const response=responses[method];res.setHeader('Content-Type','application/json');res.end(JSON.stringify(typeof response==='function'?await response():response??{}));});
  await new Promise<void>(resolve=>fake.listen(0,'127.0.0.1',resolve));const previous=config.LIVEKIT_URL;
  config.LIVEKIT_URL=`http://127.0.0.1:${(fake.address() as import('node:net').AddressInfo).port}`;
  try{await fn(calls);}finally{config.LIVEKIT_URL=previous;await new Promise<void>(resolve=>fake.close(()=>resolve()));}
@@ -64,6 +68,36 @@ test('registration races keep field-specific duplicate errors',async()=>{
   assert.equal(attempts.find(r=>r.status===409)!.body.error.code,'EMAIL_TAKEN');
 });
 
+test('email allowlist never grants admin through demo verification or startup sync',async()=>{
+ const previous=config.DEMO_MAILBOX,emails=[...platformAdminEmails];
+ const signup=async(name:string)=>{const result=await c().post('/api/auth/register',{username:name,email:`${name}@example.com`,password:'password123'});assert.equal(result.status,201);return result.body.user;};
+ try{
+  platformAdminEmails.push('demo_admin_spoof@example.com','real_admin_verify@example.com');config.DEMO_MAILBOX=true;
+  const demo=await signup('demo_admin_spoof');assert.equal(demo.isPlatformAdmin,false);
+  const letter=await pool.query(`SELECT text_body,html_body FROM outbound_emails WHERE user_id=$1`,[demo.id]);
+  await confirmEmail(openMail(letter.rows[0]).text.match(/token=([^\s]+)/)![1]);await syncPlatformAdmins();
+  config.DEMO_MAILBOX=false;await syncPlatformAdmins();
+  assert.equal((await pool.query(`SELECT is_platform_admin FROM users WHERE id=$1`,[demo.id])).rows[0].is_platform_admin,false);
+  const real=await signup('real_admin_verify');assert.equal(real.isPlatformAdmin,false);
+  const realLetter=await pool.query(`SELECT text_body,html_body FROM outbound_emails WHERE user_id=$1`,[real.id]);
+  await confirmEmail(openMail(realLetter.rows[0]).text.match(/token=([^\s]+)/)![1]);
+  assert.equal((await pool.query(`SELECT is_platform_admin FROM users WHERE id=$1`,[real.id])).rows[0].is_platform_admin,true);
+ }finally{config.DEMO_MAILBOX=previous;platformAdminEmails.splice(0,platformAdminEmails.length,...emails);}
+});
+
+test('public verification fails early without usable SMTP and keeps LAN demo mode available',()=>{
+ const previous={NODE_ENV:config.NODE_ENV,SMTP_HOST:config.SMTP_HOST,DEMO_MAILBOX:config.DEMO_MAILBOX,APP_URL:config.APP_URL,REQUIRE_EMAIL_VERIFICATION:config.REQUIRE_EMAIL_VERIFICATION};
+ try{Object.assign(config,{NODE_ENV:'production',SMTP_HOST:'',DEMO_MAILBOX:false,APP_URL:'https://chat.example.com',REQUIRE_EMAIL_VERIFICATION:true});assert.throws(validateMailConfiguration,/real SMTP/);config.SMTP_HOST='mailpit';assert.throws(validateMailConfiguration,/real SMTP/);config.DEMO_MAILBOX=true;assert.doesNotThrow(validateMailConfiguration);}
+ finally{Object.assign(config,previous);}
+});
+
+test('legacy mail queue is encrypted before startup and expired link bodies are erased',async()=>{
+ const user=await c().register('mail_legacy_protect');
+ const row=await pool.query(`INSERT INTO outbound_emails(user_id,recipient,subject,text_body,html_body,expires_at) VALUES($1,$2,'legacy','private legacy link','<p>private legacy link</p>',now()+interval '1 hour') RETURNING id`,[user.user.id,user.user.email]);
+ await protectQueuedMail();let current=(await pool.query(`SELECT text_body,html_body FROM outbound_emails WHERE id=$1`,[row.rows[0].id])).rows[0];assert.match(current.text_body,/^sealed:v1:/);assert.equal(openMail(current).text,'private legacy link');assert.equal(current.html_body,'');
+ await pool.query(`UPDATE outbound_emails SET expires_at=now()-interval '1 second' WHERE id=$1`,[row.rows[0].id]);await clearInvalidMail();current=(await pool.query(`SELECT text_body,html_body FROM outbound_emails WHERE id=$1`,[row.rows[0].id])).rows[0];assert.deepEqual(current,{text_body:'',html_body:''});
+});
+
 test('failed SMTP remains queued with bounded backoff rather than pretending delivery',async()=>{
   const pending=await pool.query(`SELECT id,attempts FROM outbound_emails WHERE delivered_at IS NULL AND next_attempt_at<=now() ORDER BY next_attempt_at LIMIT 1`);
   assert.ok(pending.rowCount);
@@ -78,8 +112,9 @@ test('email verification gates new users, resends with cooldown and safely consu
   assert.equal(u.user.email,'verify@example.com');assert.equal(u.user.emailVerified,false);
   assert.equal((await u.get('/api/users/me')).status,200);
   assert.equal((await u.post('/api/servers',{name:'Unverified server'})).body.error.code,'EMAIL_UNVERIFIED');
-  const queued=await pool.query(`SELECT text_body FROM outbound_emails WHERE user_id=$1 ORDER BY created_at DESC LIMIT 1`,[u.user.id]);
-  const token=queued.rows[0].text_body.match(/token=([^\s]+)/)[1];
+  const queued=await pool.query(`SELECT text_body,html_body FROM outbound_emails WHERE user_id=$1 ORDER BY created_at DESC LIMIT 1`,[u.user.id]);
+  const token=openMail(queued.rows[0]).text.match(/token=([^\s]+)/)![1];
+  assert.ok(!queued.rows[0].text_body.includes(token));assert.equal(queued.rows[0].html_body,'');
   const stored=await pool.query(`SELECT token_hash FROM email_verifications WHERE user_id=$1`,[u.user.id]);
   assert.equal(stored.rows[0].token_hash,createHash('sha256').update(token).digest('hex'));
   await pool.query(`UPDATE email_verifications SET expires_at=now()-interval '1 minute' WHERE user_id=$1`,[u.user.id]);
@@ -88,8 +123,8 @@ test('email verification gates new users, resends with cooldown and safely consu
   await pool.query(`UPDATE email_verifications SET created_at=now()-interval '2 minutes' WHERE user_id=$1`,[u.user.id]);
   assert.equal((await u.post('/api/auth/email/resend')).status,200);
   assert.equal((await c().post('/api/auth/email/confirm',{token})).status,400,'resend invalidates superseded link');
-  const latest=await pool.query(`SELECT text_body FROM outbound_emails WHERE user_id=$1 ORDER BY created_at DESC LIMIT 1`,[u.user.id]);
-  const fresh=latest.rows[0].text_body.match(/token=([^\s]+)/)[1];
+  const latest=await pool.query(`SELECT text_body,html_body FROM outbound_emails WHERE user_id=$1 ORDER BY created_at DESC LIMIT 1`,[u.user.id]);
+  const fresh=openMail(latest.rows[0]).text.match(/token=([^\s]+)/)![1];
   const confirm=await c().post('/api/auth/email/confirm',{token:fresh});assert.equal(confirm.status,200);assert.equal(confirm.body.accessToken,undefined,'confirmation is not login');
   assert.equal((await c().post('/api/auth/email/confirm',{token:fresh})).status,200,'opening a consumed confirmed link is harmless');
   assert.equal((await u.get('/api/users/me')).body.emailVerified,true);
@@ -117,6 +152,25 @@ test('login: wrong password, success, CSRF header required for cookie endpoints'
   const ok = await c().post('/api/auth/login', { email: 'bob@example.com', password: 'password123' });
   assert.equal(ok.status, 200);
   assert.ok(ok.body.accessToken);
+});
+
+test('email confirmation and resend use a consistent lock order',async()=>{
+ const u=c(),signup=await u.post('/api/auth/register',{username:'verify_lock_order',email:'verify_lock_order@example.com',password:'password123'});
+ const userId=signup.body.user.id;
+ const queued=await pool.query(`SELECT text_body,html_body FROM outbound_emails WHERE user_id=$1 ORDER BY created_at DESC LIMIT 1`,[userId]);
+ const token=openMail(queued.rows[0]).text.match(/token=([^\s]+)/)![1];
+ await pool.query(`UPDATE email_verifications SET created_at=now()-interval '2 minutes' WHERE user_id=$1`,[userId]);
+ const barrier=await pool.connect();await barrier.query('BEGIN');await barrier.query(`SELECT id FROM users WHERE id=$1 FOR UPDATE`,[userId]);
+ const observe=(p:Promise<unknown>)=>p.then(()=>null,e=>e);
+ const waitBlocked=async(n:number)=>{for(let i=0;i<150;i++){const r=await pool.query(`SELECT count(*)::int AS n FROM pg_stat_activity WHERE datname=current_database() AND wait_event_type='Lock' AND pid<>pg_backend_pid()`);if(r.rows[0].n>=n)return;await sleep(10);}throw new Error('Expected verification queries to reach row lock');};
+ let resend:Promise<any>|undefined,confirm:Promise<any>|undefined;
+ try{
+  resend=observe(resendEmailVerification(userId));await waitBlocked(1);
+  confirm=observe(confirmEmail(token));await waitBlocked(2);
+ }finally{await barrier.query('COMMIT');barrier.release();}
+ const errors=await Promise.all([resend!,confirm!]);
+ assert.equal(errors[0],null,'resend finishes without a database deadlock');
+ assert.equal(errors[1]?.code,'VERIFY_INVALID','superseded link is rejected after the resend commits');
 });
 
 test('mail worker delivers current links and skips expired or superseded authentication mail',async()=>{
@@ -256,8 +310,8 @@ test('changing password revokes every token on other devices and keeps the curre
   const login=await device.post('/api/auth/login',{email:'change_session@example.com',password:'password123'});device.token=login.body.accessToken;
   const retired=device.token;await device.post('/api/auth/refresh');
   await u.post('/api/auth/password/forgot',{email:u.user.email});
-  const resetLetter=await pool.query(`SELECT text_body FROM outbound_emails WHERE user_id=$1 AND purpose='password-reset' ORDER BY created_at DESC LIMIT 1`,[u.user.id]);
-  const oldReset=resetLetter.rows[0].text_body.match(/token=([^\s]+)/)[1];
+  const resetLetter=await pool.query(`SELECT text_body,html_body FROM outbound_emails WHERE user_id=$1 AND purpose='password-reset' ORDER BY created_at DESC LIMIT 1`,[u.user.id]);
+  const oldReset=openMail(resetLetter.rows[0]).text.match(/token=([^\s]+)/)![1];
   assert.equal((await u.post('/api/auth/password/change',{currentPassword:'password123',newPassword:'changedpassword123'})).status,200);
   assert.equal((await c().post('/api/auth/password/reset',{token:oldReset,password:'obsoletepassword123'})).status,400,'changing password invalidates outstanding reset links');
   device.token=retired;assert.equal((await device.get('/api/users/me')).status,401);
@@ -317,12 +371,23 @@ test('notification mutations return exactly the affected ids and unread count',a
  const a=await c().register('notif_snapshot_a'),b=await c().register('notif_snapshot_b');
  await notify([a.user.id,b.user.id],'server',{content:'before read'});
  const first=(await a.get('/api/notifications')).body.items[0].id;
- const read=await a.post('/api/notifications/read',{ids:'all'});assert.equal(read.status,200);assert.deepEqual(read.body,{ids:[first],unreadChanged:1});
- assert.deepEqual((await a.post('/api/notifications/read',{ids:'all'})).body,{ids:[],unreadChanged:0});
+ const read=await a.post('/api/notifications/read',{ids:'all'});assert.equal(read.status,200);assert.deepEqual(read.body.ids,[first]);assert.equal(read.body.unreadChanged,1);assert.ok(read.body.mutationId);
+ const repeated=(await a.post('/api/notifications/read',{ids:'all'})).body;assert.deepEqual(repeated.ids,[]);assert.equal(repeated.unreadChanged,0);
  assert.equal((await b.get('/api/notifications')).body.unread,1);
  await notify([a.user.id],'server',{content:'after read'});const beforeClear=(await a.get('/api/notifications')).body;
  const cleared=await a.del('/api/notifications');assert.equal(cleared.status,200);assert.equal(cleared.body.unreadChanged,1);assert.deepEqual(cleared.body.ids.sort(),beforeClear.items.map((n:any)=>n.id).sort());
  await notify([a.user.id],'server',{content:'after clear'});assert.equal((await a.get('/api/notifications')).body.unread,1);
+});
+
+test('notification read and clear are broadcast to every active device',async()=>{
+ const user=await c().register('notification_devices'),a=await connectGateway(h.base,user.token!),b=await connectGateway(h.base,user.token!);
+ try{
+  await notify([user.user.id],'server',{content:'multi-device fixture'});const item=await a.waitFor('notification:new');
+  const read=(await user.post('/api/notifications/read',{ids:'all'})).body;
+  for(const gateway of [a,b]){const event=await gateway.waitFor('notification:read',d=>d.mutationId===read.mutationId);assert.deepEqual(event.ids,[item.id]);assert.equal(event.unreadChanged,1);}
+  const clear=(await user.del('/api/notifications')).body;
+  for(const gateway of [a,b]){const event=await gateway.waitFor('notification:clear',d=>d.mutationId===clear.mutationId);assert.deepEqual(event.ids,[item.id]);assert.equal(event.unreadChanged,0);}
+ }finally{a.close();b.close();}
 });
 
 test('permissions: members cannot manage channels; owners can; changes broadcast', async () => {
@@ -371,6 +436,83 @@ test('role hierarchy: a moderator cannot kick an admin or grant permissions they
   assert.equal((await mod.post(`/api/servers/${serverId}/roles`, { name: 'x' })).status, 403);
   // Admin can kick the moderator.
   assert.equal((await admin.post(`/api/servers/${serverId}/members/${mod.user.id}/kick`, {})).status, 204);
+});
+
+test('invite redemption counts successful memberships only and is idempotent',async()=>{
+ const {owner,member,serverId}=await serverWithMember();
+ await owner.put(`/api/servers/${serverId}/bans/${member.user.id}`,{});
+ const inv=(await owner.post(`/api/servers/${serverId}/invites`,{maxUses:1})).body;
+ assert.equal((await member.post(`/api/invites/${inv.code}`)).status,403);
+ assert.equal((await pool.query(`SELECT uses FROM invites WHERE code=$1`,[inv.code])).rows[0].uses,0,'denied membership must not consume an invite');
+ const newcomer=await c().register('invite_atomic');
+ const attempts=await Promise.all(Array.from({length:5},()=>newcomer.post(`/api/invites/${inv.code}`)));
+ assert.ok(attempts.every(r=>r.status===200),'repeated acceptance by the same member succeeds');
+ assert.equal((await pool.query(`SELECT uses FROM invites WHERE code=$1`,[inv.code])).rows[0].uses,1);
+ assert.equal((await newcomer.post(`/api/invites/${inv.code}`)).status,200);
+ const other=await c().register('invite_atomic_other');
+ assert.equal((await other.post(`/api/invites/${inv.code}`)).status,410);
+});
+
+test('concurrent single-use invite redemptions admit one distinct member',async()=>{
+ const {owner,serverId}=await serverWithMember();
+ const inv=(await owner.post(`/api/servers/${serverId}/invites`,{maxUses:1})).body;
+ const a=await c().register('invite_cap_a'),b=await c().register('invite_cap_b');
+ const results=await Promise.all([a,b].map(u=>u.post(`/api/invites/${inv.code}`)));
+ assert.deepEqual(results.map(r=>r.status).sort(),[200,410]);
+ assert.equal((await pool.query(`SELECT uses FROM invites WHERE code=$1`,[inv.code])).rows[0].uses,1);
+ assert.equal((await pool.query(`SELECT count(*)::int AS n FROM server_members WHERE server_id=$1 AND user_id=ANY($2::uuid[])`,[serverId,[a.user.id,b.user.id]])).rows[0].n,1);
+});
+
+test('active voice permissions follow role edits, assignments and deletion',async()=>{
+ const {owner,member,serverId,voice,full}=await serverWithMember();
+ const base=full.roles.find((r:any)=>r.isDefault);
+ await withLiveKitCapture(async calls=>{
+  await markJoined(member.user.id,voice.id);
+  const patch=await owner.patch(`/api/servers/${serverId}/roles/${base.id}`,{permissions:Perm.CONNECT.toString()});assert.equal(patch.status,204);
+  const permissions=()=>calls.filter(c=>c.method==='UpdateParticipant'&&c.identity===member.user.id).map(c=>(c as any).permission);
+  assert.deepEqual(permissions().at(-1)?.canPublishSources,[],'existing tracks lose revoked sources immediately');
+  const role=(await owner.post(`/api/servers/${serverId}/roles`,{name:'Speaker',permissions:Perm.SPEAK.toString()})).body;
+  assert.equal((await owner.put(`/api/servers/${serverId}/members/${member.user.id}/roles`,{roleIds:[role.id]})).status,200);
+  assert.deepEqual(permissions().at(-1)?.canPublishSources,['MICROPHONE']);
+  await owner.del(`/api/servers/${serverId}/roles/${role.id}`);
+  assert.deepEqual(permissions().at(-1)?.canPublishSources,[]);
+  assert.equal((await owner.patch(`/api/servers/${serverId}/roles/${base.id}`,{permissions:'0'})).status,204);
+  assert.ok(calls.some(c=>c.method==='RemoveParticipant'&&c.identity===member.user.id));
+  assert.equal(await redis.get(`voice:user:${member.user.id}`),null);
+ });
+});
+
+test('concurrent server moderation preserves a newer self-mute state',async()=>{
+ const {owner,member,serverId,voice}=await serverWithMember();let release!:()=>void,received!:()=>void;
+ const gate=new Promise<void>(r=>release=r),waiting=new Promise<void>(r=>received=r);
+ await withLiveKitCapture(async()=>{
+  await markJoined(member.user.id,voice.id);const moderation=owner.patch(`/api/servers/${serverId}/voice/${member.user.id}`,{serverMute:true});
+  try{await waiting;await updateSelfState(member.user.id,{selfMute:true});}finally{release();}
+  assert.equal((await moderation).status,200);const state=JSON.parse((await redis.get(`voice:user:${member.user.id}`))!);assert.equal(state.serverMute,true);assert.equal(state.selfMute,true);
+ },{UpdateParticipant:async()=>{received();await gate;return {};}});
+});
+
+test('late voice webhooks recheck access and old token publishing permissions',async()=>{
+ const {owner,member,serverId,voice,full}=await serverWithMember();
+ const base=full.roles.find((r:any)=>r.isDefault);
+ await withLiveKitCapture(async calls=>{
+  const token=await member.post(`/api/voice/${voice.id}/token`);assert.equal(token.status,200);
+  await owner.patch(`/api/servers/${serverId}/roles/${base.id}`,{permissions:Perm.CONNECT.toString()});
+  await handleWebhook({event:'participant_joined',room:{name:`ch_${voice.id}`},participant:{identity:member.user.id}});
+  assert.deepEqual((calls.find(c=>c.method==='UpdateParticipant') as any)?.permission.canPublishSources,[]);
+  await markLeft(member.user.id,voice.id);
+  await owner.patch(`/api/servers/${serverId}/roles/${base.id}`,{permissions:'0'});
+  await handleWebhook({event:'participant_joined',room:{name:`ch_${voice.id}`},participant:{identity:member.user.id}});
+  assert.equal(await redis.get(`voice:user:${member.user.id}`),null);
+  assert.ok(calls.some(c=>c.method==='RemoveParticipant'&&c.identity===member.user.id));
+ });
+});
+
+test('voice reconciliation finds untracked SFU rooms and removes banned token holders',async()=>{
+ const {owner,member,serverId,voice}=await serverWithMember();await owner.put(`/api/servers/${serverId}/bans/${member.user.id}`,{});
+ await withLiveKitCapture(async calls=>{
+  await reconcileVoice();assert.ok(calls.some(c=>c.method==='RemoveParticipant'&&c.identity===member.user.id&&c.room===`ch_${voice.id}`));assert.equal(await redis.get(`voice:user:${member.user.id}`),null);
+ },{ListRooms:{rooms:[{name:`ch_${voice.id}`}]},ListParticipants:{participants:[{identity:member.user.id}]}});
 });
 
 test('badges: only MANAGE_BADGES can create/grant; badges appear on profiles', async () => {
@@ -528,6 +670,17 @@ test('slowmode is enforced for regular members', async () => {
   assert.equal((await owner.post(`/api/channels/${general.id}/messages`, { content: 'mod bypass' })).status, 201);
 });
 
+test('pin capacity is atomic and pinning an existing pin is idempotent',async()=>{
+ const {owner,general}=await serverWithMember();
+ const pins=await pool.query(`INSERT INTO messages(channel_id,author_id,content,pinned) SELECT $1,$2,'capacity fixture',true FROM generate_series(1,49) RETURNING id`,[general.id,owner.user.id]);
+ const a=(await owner.post(`/api/channels/${general.id}/messages`,{content:'candidate a'})).body;
+ const b=(await owner.post(`/api/channels/${general.id}/messages`,{content:'candidate b'})).body;
+ const attempts=await Promise.all([a,b].map(m=>owner.put(`/api/messages/${m.id}/pin`)));
+ assert.deepEqual(attempts.map(r=>r.status).sort(),[200,400]);
+ assert.equal((await pool.query(`SELECT count(*)::int AS n FROM messages WHERE channel_id=$1 AND pinned`,[general.id])).rows[0].n,50);
+ assert.equal((await owner.put(`/api/messages/${pins.rows[0].id}/pin`)).status,200,'retry at capacity keeps an already pinned message pinned');
+});
+
 test('pins, bookmarks, unread markers and full-text search with filters', async () => {
   const { owner, member, serverId, general } = await serverWithMember();
   const m1 = await member.post(`/api/channels/${general.id}/messages`, { content: 'Привет всем, hello everyone' });
@@ -642,8 +795,8 @@ test('uploads: content sniffing, size limit, access control by channel membershi
   const login=await member.post('/api/auth/login',{email:member.user.email,password:'password123'});member.token=login.body.accessToken;
   const other=c();other.cookies.set('cc_media',member.cookies.get('cc_media')!);
   await member.post('/api/auth/password/forgot',{email:member.user.email});
-  const letter=await pool.query(`SELECT text_body FROM outbound_emails WHERE user_id=$1 AND subject='Concord — восстановление пароля' ORDER BY created_at DESC LIMIT 1`,[member.user.id]);
-  const resetToken=letter.rows[0].text_body.match(/token=([^\s]+)/)[1];
+  const letter=await pool.query(`SELECT text_body,html_body FROM outbound_emails WHERE user_id=$1 AND subject='Concord — восстановление пароля' ORDER BY created_at DESC LIMIT 1`,[member.user.id]);
+  const resetToken=openMail(letter.rows[0]).text.match(/token=([^\s]+)/)![1];
   await c().post('/api/auth/password/reset',{token:resetToken,password:'replacement123'});
   assert.equal((await other.get(msg.body.attachments[0].url)).status,401,'password reset invalidates copied media cookies');
   const again=await member.post('/api/auth/login',{email:member.user.email,password:'replacement123'});member.token=again.body.accessToken;
@@ -671,6 +824,7 @@ test('avatar upload is re-encoded and served as webp; bad profile colors are rej
 // ───────────────────────────── voice ─────────────────────────────
 
 test('voice: tokens carry real grants; timeouts and server mute are enforced server-side', async () => {
+ await withLiveKitCapture(async()=>{
   const { owner, member, serverId, voice, general } = await serverWithMember();
   assert.equal((await member.post(`/api/voice/${general.id}/token`)).status, 400); // text channel
   const tok = await member.post(`/api/voice/${voice.id}/token`);
@@ -695,8 +849,7 @@ test('voice: tokens carry real grants; timeouts and server mute are enforced ser
   const joined = await gwOwner.waitFor('voice:join', (d) => d.userId === member.user.id);
   assert.equal(joined.channelId, voice.id);
 
-  // Server mute (moderator action) — member's next token has no microphone grant. LiveKit is not
-  // running in the test environment, so the live permission update is logged and skipped.
+  // Server mute updates the captured SFU permission request and the next join token.
   assert.equal((await member.patch(`/api/servers/${serverId}/voice/${owner.user.id}`, { serverMute: true })).status, 403);
   const muted = await owner.patch(`/api/servers/${serverId}/voice/${member.user.id}`, { serverMute: true });
   assert.equal(muted.status, 200);
@@ -710,6 +863,7 @@ test('voice: tokens carry real grants; timeouts and server mute are enforced ser
   assert.equal((await member.post(`/api/voice/${voice.id}/token`)).status, 403);
   assert.equal((await member.post(`/api/channels/${general.id}/messages`, { content: 'x' })).status, 403);
   gwOwner.close();
+ });
 });
 
 test('gateway: accepts a heartbeat sent immediately after authentication', async () => {

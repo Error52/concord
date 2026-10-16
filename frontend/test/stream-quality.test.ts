@@ -42,8 +42,9 @@ test('bandwidth startup does not masquerade as CPU overload or erase screen deta
  const c=new StreamLoadController();
  for(let i=0;i<30;i++)c.sample([{type:'outbound-rtp',kind:'video',qualityLimitationReason:'bandwidth'}],30);
  assert.equal(c.tier,0);
- assert.equal(streamProfile('auto').degradation,'maintain-resolution');
-  for (const quality of ['720p30','1080p30','1080p60','text'] as const) assert.equal(streamProfile(quality).degradation,'maintain-resolution');
+ assert.equal(streamProfile('auto').degradation,'maintain-framerate');
+ for (const quality of ['720p30','1080p30','1080p60'] as const) assert.equal(streamProfile(quality).degradation,'maintain-framerate');
+ assert.equal(streamProfile('text').degradation,'maintain-resolution');
 });
 test('screen codec falls back on browsers without H.264',()=>{
  assert.equal(screenCodec(null),'vp8');

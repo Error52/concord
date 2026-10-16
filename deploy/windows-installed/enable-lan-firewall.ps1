@@ -12,10 +12,13 @@ try {
     $bytes=$ip.GetAddressBytes();$remaining=[int]$lan.prefix
     for($i=0;$i -lt 4;$i++){$bits=[Math]::Min(8,[Math]::Max(0,$remaining));$bytes[$i]=$bytes[$i] -band ((255 -shl (8-$bits)) -band 255);$remaining-=8}
     $subnet=([Net.IPAddress]::new($bytes)).ToString()+"/$($lan.prefix)"
+    $tcpMedia=if($lan.mediaTcpPort){[int]$lan.mediaTcpPort}else{7881}
+    $udpMedia=if($lan.mediaUdpPort){[int]$lan.mediaUdpPort}else{7882}
+    if($tcpMedia -lt 1 -or $tcpMedia -gt 65535 -or $udpMedia -lt 1 -or $udpMedia -gt 65535){throw 'Invalid media port'}
     $rules=@(
         @{suffix='HTTPS';port=8443;protocol='TCP';exe='caddy\caddy.exe'},
-        @{suffix='Media-TCP';port=7881;protocol='TCP';exe='livekit-new\livekit-server.exe'},
-        @{suffix='Media-UDP';port=7882;protocol='UDP';exe='livekit-new\livekit-server.exe'}
+        @{suffix='Media-TCP';port=$tcpMedia;protocol='TCP';exe='livekit-new\livekit-server.exe'},
+        @{suffix='Media-UDP';port=$udpMedia;protocol='UDP';exe='livekit-new\livekit-server.exe'}
     )
     foreach($r in $rules){
         $name='Concord-LAN-01a117ec-'+$r.suffix
@@ -28,6 +31,6 @@ try {
     }
     if($Check){exit 0}
     $status=if($Remove){'Removed'}else{'Enabled'}
-    "$status Concord LAN rules: $($lan.ip), $subnet, TCP 8443/7881 + UDP 7882 only." | Set-Content -LiteralPath $taskLog -Encoding UTF8
+    "$status Concord LAN rules: $($lan.ip), $subnet, TCP 8443/$tcpMedia + UDP $udpMedia only." | Set-Content -LiteralPath $taskLog -Encoding UTF8
     exit 0
 }catch{$_ | Out-String | Set-Content -LiteralPath $taskLog -Encoding UTF8;exit 1}

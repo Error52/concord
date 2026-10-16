@@ -24,7 +24,7 @@ export function FriendsPage() {
 
   return (
     <div className="main-col">
-      <header className="main-head">
+      <header className="main-head friends-head">
         <button className="icon-btn mobile-only" onClick={() => uiStore.set({ mobilePanel: 'nav' })} aria-label="Меню">
           <LuMenu />
         </button>

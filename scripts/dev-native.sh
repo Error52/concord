@@ -2,11 +2,15 @@
 # Run Concord WITHOUT Docker on macOS or Linux (useful for development, or when Docker Desktop is slow).
 #
 # Needs locally: Node.js 24+, pnpm 11.25.0, PostgreSQL 14+, Redis 6+, LiveKit 1.13.9, Mailpit.
-#   macOS (Homebrew):  brew install node postgresql@16 redis livekit
+#   macOS (Homebrew):  brew install node postgresql@16 redis livekit mailpit
 #                      brew services start postgresql@16 && brew services start redis
 #   Ubuntu/Debian:     sudo apt install postgresql redis-server
 #                      curl -sSL https://get.livekit.io | bash        # installs livekit-server
 #                      Node 24: https://nodejs.org or `nvm install 24`
+#                      Mailpit: download the linux-amd64/linux-arm64 v1.31.5 binary from
+#                      https://github.com/axllent/mailpit/releases/tag/v1.31.5
+#                      extract it and install with: sudo install -m 0755 mailpit /usr/local/bin/mailpit
+#                      Mailpit is not assumed to be available from the OS apt repositories.
 #
 #   ./scripts/dev-native.sh            → http://localhost:5173
 # Ctrl+C stops everything this script started.

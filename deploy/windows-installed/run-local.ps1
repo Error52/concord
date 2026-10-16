@@ -7,7 +7,12 @@ $taskState = Join-Path $taskRoot 'local-data'
 $taskLogs = Join-Path $taskState 'logs'
 $taskPgBin = Join-Path $taskRuntime 'postgres\pgsql\bin'
 $taskPgData = Join-Path $taskState 'postgres'
-$taskNode = 'C:\Users\User\.cache\codex-runtimes\codex-primary-runtime\dependencies\node\bin\node.exe'
+$taskNode = $env:CONCORD_NODE
+if (-not $taskNode) { $taskNode = (Get-Command node.exe -ErrorAction SilentlyContinue).Source }
+if (-not $taskNode -or -not (Test-Path -LiteralPath $taskNode)) { throw 'Node.js 24+ is required. Install Node on PATH or set CONCORD_NODE to node.exe.' }
+$taskTcpMedia = if($env:LIVEKIT_TCP_PORT){[int]$env:LIVEKIT_TCP_PORT}else{7881}
+$taskUdpMedia = if($env:LIVEKIT_UDP_PORT){[int]$env:LIVEKIT_UDP_PORT}else{7882}
+if($taskTcpMedia -lt 1 -or $taskTcpMedia -gt 65535 -or $taskUdpMedia -lt 1 -or $taskUdpMedia -gt 65535){throw 'Invalid media port'}
 $taskPidFile = Join-Path $taskState 'processes.json'
 $taskUrl = 'http://localhost:5173'
 $taskLanFile = Join-Path $taskState 'lan.json'
@@ -27,7 +32,7 @@ if ($Lan) {
     if($LanIP){$taskCandidate=$taskCandidates | Where-Object ip -eq $LanIP | Select-Object -First 1}
     else{$taskCandidate=$taskCandidates | Select-Object -First 1}
     if(-not $taskCandidate){throw 'No private IPv4 address with a gateway found. Use -Lan -LanIP <Wi-Fi IP>.'}
-    $taskLan=@{ip=$taskCandidate.ip;interfaceAlias=$taskCandidate.interfaceAlias;prefix=$taskCandidate.prefix;httpsPort=8443}
+    $taskLan=@{ip=$taskCandidate.ip;interfaceAlias=$taskCandidate.interfaceAlias;prefix=$taskCandidate.prefix;httpsPort=8443;mediaTcpPort=$taskTcpMedia;mediaUdpPort=$taskUdpMedia}
     New-Item -ItemType Directory -Path $taskState -Force | Out-Null
     $taskLan | ConvertTo-Json | Set-Content -LiteralPath $taskLanFile -Encoding UTF8
 }
@@ -99,7 +104,7 @@ if (Test-Path -LiteralPath $taskPidFile) {
     if ($live.Count -gt 0) { throw 'An incomplete Concord stack is running. Use the stop shortcut, then start again.' }
 }
 
-foreach ($port in @(5173,4000,55432,56379,7880,7881,51025,58025)) {
+foreach ($port in @(5173,4000,55432,56379,7880,$taskTcpMedia,51025,58025)) {
     $client = New-Object Net.Sockets.TcpClient
     $busy = $false
     try { $client.Connect('127.0.0.1',$port); $busy=$true } catch { } finally { $client.Dispose() }
@@ -173,8 +178,8 @@ port: 7880
 bind_addresses: $taskMediaBind
 log_level: info
 rtc:
-  tcp_port: 7881
-  udp_port: 7882
+  tcp_port: $taskTcpMedia
+  udp_port: $taskUdpMedia
   use_external_ip: false
   node_ip: $taskMediaIP
   enable_loopback_candidate: true

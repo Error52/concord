@@ -1,4 +1,4 @@
-import { queryOne } from '../db/pool.js';
+import { queryOne, type Queryable } from '../db/pool.js';
 import { Errors } from '../http/errors.js';
 import { ALL_PERMISSIONS, Perm, has } from '../models/permissions.js';
 
@@ -14,7 +14,7 @@ export interface MemberAccess {
 const TIMEOUT_DENY = Perm.SEND_MESSAGES | Perm.ADD_REACTIONS | Perm.CONNECT | Perm.SPEAK | Perm.VIDEO | Perm.ATTACH_FILES;
 
 /** Returns null if the user is not a member of the server. */
-export async function getAccess(serverId: string, userId: string): Promise<MemberAccess | null> {
+export async function getAccess(serverId: string, userId: string, db?: Queryable): Promise<MemberAccess | null> {
   const row = await queryOne<{ owner_id: string; timeout_until: Date | null; perms: string | null; top: number | null }>(
     `SELECT s.owner_id, sm.timeout_until,
             (SELECT bit_or(r.permissions) FROM roles r
@@ -22,7 +22,7 @@ export async function getAccess(serverId: string, userId: string): Promise<Membe
             (SELECT max(r.position) FROM roles r JOIN member_roles mr ON mr.role_id = r.id WHERE mr.server_id = s.id AND mr.user_id = sm.user_id) AS top
        FROM servers s JOIN server_members sm ON sm.server_id = s.id AND sm.user_id = $2
       WHERE s.id = $1`,
-    [serverId, userId],
+    [serverId, userId], db,
   );
   if (!row) return null;
   const isOwner = row.owner_id === userId;
