@@ -26,6 +26,8 @@ jobs:
       - run: node --test test/deployment.test.mjs
       - run: docker build --progress=plain -t concord-frontend-ci ./frontend
       - run: docker build --progress=plain -t concord-backend-ci ./backend
+      - name: Check production native image processing
+        run: docker run --rm concord-backend-ci node -e "require('pg'); require('ioredis'); require('sharp')({create:{width:1,height:1,channels:3,background:'#000'}}).png().toBuffer().then(b=>{if(!b.length)process.exit(1)})"
 
   frontend:
     runs-on: ubuntu-latest

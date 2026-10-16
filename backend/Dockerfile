@@ -21,8 +21,9 @@ CMD ["node", "--import", "tsx", "--test", "--test-force-exit", "--test-concurren
 
 FROM build AS production-dependencies
 RUN --mount=type=cache,id=concord-backend-pnpm,target=/pnpm/store \
-    pnpm prune --prod --ignore-scripts --config.node-linker=hoisted --store-dir=/pnpm/store \
-    --registry="$NPM_REGISTRY" --network-concurrency=4 --fetch-timeout=300000 --fetch-retries=5
+    pnpm prune --prod --ignore-scripts --config.node-linker=hoisted --config.store-dir=/pnpm/store \
+    --config.registry="$NPM_REGISTRY" --config.network-concurrency=4 \
+    --config.fetch-timeout=300000 --config.fetch-retries=5
 
 FROM node:24-bookworm-slim AS runtime
 ENV NODE_ENV=production
