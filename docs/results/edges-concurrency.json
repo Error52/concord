@@ -1,0 +1,17 @@
+{
+  "browser": "155.0.8059.80",
+  "checks": [
+    "bookmarks load failure stops the skeleton and retries successfully",
+    "failed bookmark removal keeps the item and can be retried",
+    "rapid sends queue in order while the first response is delayed",
+    "lost send response retries one attachment message with its original reply",
+    "search pagination retains the current page while loading the next",
+    "thread images open in the shared viewer and Escape keeps the thread open",
+    "late server response cannot restore a deleted server in the sidebar",
+    "notification read and clear from another tab update the open inbox",
+    "failed voice connection does not ring the DM recipient",
+    "revoking voice sources releases captures, restoring SPEAK republishes, CONNECT removal disconnects"
+  ],
+  "failures": [],
+  "errors": []
+}

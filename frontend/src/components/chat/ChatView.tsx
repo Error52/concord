@@ -115,7 +115,7 @@ export function ChatView({ channelId, serverId, jumpTo }: { channelId: string; s
   const title = isDm ? otherName : channel.name;
 
   const startCall = async (video: boolean) => {
-    await voice.join(channelId);
+    if(!await voice.join(channelId))return;
     gateway.send('call:ring', { channelId, video });
     if (video) await voice.setCamera(true);
   };

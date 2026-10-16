@@ -9,7 +9,7 @@ g.history ??= { pushState() {}, replaceState() {} };
 
 const { StatsSampler, classify } = await import('../src/webrtc/stats.ts');
 const { VoiceActivityDetector, toDb, dbToMeter } = await import('../src/webrtc/audioMeter.ts');
-const { cmpId, isNewer } = await import('../src/utils/ids.ts');
+const { cmpId, isNewer,newMessageNonce } = await import('../src/utils/ids.ts');
 const { contrastRatio, readableTextOn } = await import('../src/utils/color.ts');
 const { parse, toPath } = await import('../src/state/router.ts');
 const { formatBytes, formatDuration, plural } = await import('../src/utils/format.ts');
@@ -18,6 +18,14 @@ const { isEmojiOnly } = await import('../src/utils/markdown.tsx');
 
 /** Builds an RTCStatsReport-like Map from plain records. */
 const report = (...stats: Record<string, unknown>[]) => new Map(stats.map((s) => [s.id as string, s])) as unknown as RTCStatsReport;
+
+test('message retry keys work without the secure-context randomUUID API',t=>{
+ const original=Object.getOwnPropertyDescriptor(globalThis,'crypto');
+ const getRandomValues=crypto.getRandomValues.bind(crypto);
+ Object.defineProperty(globalThis,'crypto',{configurable:true,value:{getRandomValues}});
+ t.after(()=>Object.defineProperty(globalThis,'crypto',original!));
+ const first=newMessageNonce(),second=newMessageNonce();assert.match(first,/^[a-f0-9]{32}$/);assert.notEqual(first,second);
+});
 
 test('stats: RTT, transport and codec come from the selected candidate pair and codec stats', () => {
   const sampler = new StatsSampler();

@@ -4,7 +4,7 @@ import { appStore, getState, initialState, setState, type AppState, type Channel
 import { navigate, routerStore } from './router';
 import { toast, uiStore } from './ui';
 import { settingsStore } from './settings';
-import { cmpId, isNewer } from '../utils/ids';
+import { cmpId, isNewer,newMessageNonce } from '../utils/ids';
 import {messageForViewer,withReaction,type ReactionUpdate} from '../utils/reactions';
 import { notifySound, showDesktopNotification } from '../utils/notify';
 import type {
@@ -90,6 +90,10 @@ function onReady(d: ReadyPayload): void {
   ++serverSnapshotGeneration;
   serverRefreshes.clear();
   ++notificationGeneration;
+  notificationSnapshotRevision=d.notifications.revision??'0';
+  notificationRevision=notificationSnapshotRevision;
+  notificationRows.clear();notificationMutations.clear();
+  clearCallTimers();
   setState((s) => {
     let next: AppState = {
       ...s,
@@ -118,6 +122,7 @@ function onReady(d: ReadyPayload): void {
     if (d.voiceState) next.voiceStates[d.voiceState.userId] = d.voiceState;
     return next;
   });
+  for(const call of d.incomingCalls)scheduleCallTimeout(call);
   void reloadOpenChannel();
 }
 
@@ -132,7 +137,7 @@ function upsertMessage(list: ChannelMessages | undefined, m: Message): ChannelMe
   if (!list) return list;
   const items = list.items.slice();
   // Replace an optimistic copy matched by nonce, or an existing message by id.
-  const idx = items.findIndex((x) => x.id === m.id || (m.nonce && x.nonce === m.nonce && x.pending));
+  const idx = items.findIndex((x) => x.id === m.id || (m.nonce && x.nonce === m.nonce && x.id.startsWith('pending-') && x.author?.id===m.author?.id));
   if (idx >= 0) items[idx] = { ...m, pending: false };
   else if (list.atLatest) {
     items.push(m);
@@ -141,15 +146,20 @@ function upsertMessage(list: ChannelMessages | undefined, m: Message): ChannelMe
   return { ...list, items };
 }
 
+const deliveredMessages=new Set<string>();
 function onMessageNew(m: Message): void {
   recordMessageChange(m.channelId,m.id,()=>({...m,pending:false}),{...m,pending:false});
   const s = getState();
+  const deliveryKey=`${s.me?.id}:${m.channelId}:${m.id}`;
+  const duplicate=deliveredMessages.has(deliveryKey)||!!s.messages[m.channelId]?.items.some(item=>item.id===m.id);
+  deliveredMessages.add(deliveryKey);
+  if(deliveredMessages.size>2048)deliveredMessages.delete(deliveredMessages.values().next().value!);
   const mine = m.author?.id === s.me?.id;
   setState((st) => {
     const ch = st.channels[m.channelId];
     const previousRead=st.readStates[m.channelId];
     const readStates = mine && (!previousRead || isNewer(m.id,previousRead.lastReadId)) ? { ...st.readStates, [m.channelId]: { channelId: m.channelId, lastReadId: m.id, mentionCount: 0 } } : st.readStates;
-    const mentioned = !mine && (m.mentionIds.includes(st.me?.id ?? '') || m.mentionsEveryone);
+    const mentioned = !duplicate && !mine && isNewer(m.id,previousRead?.lastReadId??'0') && (m.mentionIds.includes(st.me?.id ?? '') || m.mentionsEveryone);
     const rs = readStates[m.channelId];
     const nextRead = mentioned ? { ...readStates, [m.channelId]: { channelId: m.channelId, lastReadId: rs?.lastReadId ?? '0', mentionCount: (rs?.mentionCount ?? 0) + 1 } } : readStates;
     const lastMessageId=ch?.lastMessageId&&isNewer(ch.lastMessageId,m.id)?ch.lastMessageId:m.id;
@@ -207,8 +217,14 @@ function patchMessage(channelId: string, id: string, fn: (m: Message) => Message
 }
 
 function onNotification(n: Notification): void {
+  if(n.revision&&cmpId(n.revision,notificationSnapshotRevision)<=0)return;
+  const row=notificationRows.get(n.id);
+  if(row?.clear)return;
+  if(row)n={...n,read:true};
   if(getState().notifications.some(item=>item.id===n.id))return;
-  setState((s) => ({ notifications: [n, ...s.notifications].slice(0, 100), unreadNotifications: s.unreadNotifications + 1 }));
+  const unread=notificationCounter(n.revision,n.unread);
+  setState((s) => ({ notifications: [n, ...s.notifications].slice(0, 100), unreadNotifications: unread??(n.revision?s.unreadNotifications:s.unreadNotifications+(n.read?0:1)) }));
+  if(n.read)return;
   const me = getState().me;
   if (me?.chosenStatus === 'dnd') return;
   const viewing = n.data.channelId && isViewing(n.data.channelId as string) && document.hasFocus();
@@ -221,17 +237,31 @@ function onNotification(n: Notification): void {
 }
 
 let notificationGeneration=0;
-interface NotificationMutation {mutationId?:string;ids:string[];unreadChanged:number}
+let notificationSnapshotRevision='0',notificationRevision='0';
+const notificationRows=new Map<string,{revision:string;clear:boolean}>();
+function notificationCounter(revision?:string,unread?:number):number|undefined{
+  if(revision&&unread!==undefined&&cmpId(revision,notificationRevision)>0){notificationRevision=revision;return unread;}
+  return undefined;
+}
+interface NotificationMutation {mutationId?:string;ids:string[];unreadChanged:number;revision?:string;unread?:number}
 const notificationMutations=new Set<string>();
 function applyNotificationMutation(result:NotificationMutation,clear:boolean):void{
+  if(result.revision&&cmpId(result.revision,notificationSnapshotRevision)<=0)return;
   if(result.mutationId){
     if(notificationMutations.has(result.mutationId))return;
     notificationMutations.add(result.mutationId);
     if(notificationMutations.size>512)notificationMutations.delete(notificationMutations.values().next().value!);
   }
-  const ids=new Set(result.ids);
+  const ids=new Set(result.ids.filter(id=>{
+    const previous=notificationRows.get(id);
+    if(result.revision&&previous&&cmpId(previous.revision,result.revision)>=0)return false;
+    if(result.revision)notificationRows.set(id,{revision:result.revision,clear});
+    return true;
+  }));
+  while(notificationRows.size>2048)notificationRows.delete(notificationRows.keys().next().value!);
+  const unread=notificationCounter(result.revision,result.unread);
   setState(s=>({notifications:clear?s.notifications.filter(n=>!ids.has(n.id)):s.notifications.map(n=>ids.has(n.id)?{...n,read:true}:n),
-    unreadNotifications:Math.max(0,s.unreadNotifications-result.unreadChanged)}));
+    unreadNotifications:unread??(result.revision?s.unreadNotifications:Math.max(0,s.unreadNotifications-result.unreadChanged))}));
 }
 gateway.on('notification:read',(result:NotificationMutation)=>applyNotificationMutation(result,false));
 gateway.on('notification:clear',(result:NotificationMutation)=>applyNotificationMutation(result,true));
@@ -359,15 +389,27 @@ gateway.on('voice:leave', (d: { userId: string; channelId: string }) =>
   }),
 );
 gateway.on('voice:speaking', (d: { userId: string; speaking: boolean }) => setState((s) => ({ speaking: { ...s.speaking, [d.userId]: d.speaking } })));
+const callTimers=new Map<string,ReturnType<typeof window.setTimeout>>();
+function clearCallTimers():void{for(const timer of callTimers.values())window.clearTimeout(timer);callTimers.clear();}
+function scheduleCallTimeout(call:IncomingCall):void{
+  const old=callTimers.get(call.channelId);if(old)window.clearTimeout(old);
+  const accountId=getState().me?.id;
+  callTimers.set(call.channelId,window.setTimeout(()=>{
+    if(getState().me?.id===accountId)dismissCall(call.channelId,call.id);
+  },Math.max(0,call.timeoutSec??45)*1000));
+}
 gateway.on('call:incoming', (d: IncomingCall & { timeoutSec: number }) => {
   if (getState().me?.chosenStatus === 'dnd') return;
   setState((s) => ({ incomingCalls: [...s.incomingCalls.filter((c) => c.channelId !== d.channelId), d] }));
-  setTimeout(() => dismissCall(d.channelId), d.timeoutSec * 1000);
+  scheduleCallTimeout(d);
 });
-for (const ev of ['call:accepted', 'call:declined', 'call:ended']) gateway.on(ev, (d: { channelId: string }) => dismissCall(d.channelId));
+for (const ev of ['call:accepted', 'call:declined']) gateway.on(ev, (d: { channelId: string;ringId?:string }) => dismissCall(d.channelId,d.ringId));
+gateway.on('call:ended',(d:{channelId:string;ringId?:string})=>{if(d.ringId)dismissCall(d.channelId,d.ringId);});
 
-export function dismissCall(channelId: string): void {
-  setState((s) => ({ incomingCalls: s.incomingCalls.filter((c) => c.channelId !== channelId) }));
+export function dismissCall(channelId: string,ringId?:string): void {
+  if(ringId&&getState().incomingCalls.some(c=>c.channelId===channelId&&c.id!==ringId))return;
+  const timer=callTimers.get(channelId);if(timer)window.clearTimeout(timer);callTimers.delete(channelId);
+  setState((s) => ({ incomingCalls: s.incomingCalls.filter((c) => c.channelId !== channelId || (!!ringId&&c.id!==ringId)) }));
 }
 
 function leaveServerLocal(serverId: string, message: string | null): void {
@@ -441,6 +483,8 @@ export async function logout(): Promise<void> {
 }
 
 async function logoutLocal(message: string | null): Promise<void> {
+  clearCallTimers();
+  notificationRows.clear();notificationMutations.clear();deliveredMessages.clear();
   gateway.stop();
   const { voice } = await import('../webrtc/voiceEngine');
   await voice.disconnect();
@@ -465,7 +509,7 @@ function recordMessageChange(channelId:string,id:string,apply:(m:Message)=>Messa
 function mergeMessages(...groups:Message[][]):Message[] {
   const byId=new Map<string,Message>();
   for(const items of groups)for(const m of items){
-    if(!m.pending&&m.nonce)for(const [id,old] of byId)if(old.pending&&old.nonce===m.nonce&&old.author?.id===m.author?.id)byId.delete(id);
+    if(!m.pending&&m.nonce)for(const [id,old] of byId)if(old.id.startsWith('pending-')&&old.nonce===m.nonce&&old.author?.id===m.author?.id)byId.delete(id);
     byId.set(m.id,m);
   }
   return [...byId.values()].sort((a,b)=>{
@@ -557,6 +601,7 @@ export async function loadNewer(channelId: string): Promise<void> {
 }
 
 export interface OutgoingMessage {
+  nonce?: string;
   content: string;
   replyToId?: string | null;
   attachmentIds?: string[];
@@ -565,7 +610,7 @@ export interface OutgoingMessage {
 
 export async function sendMessage(channelId: string, msg: OutgoingMessage): Promise<boolean> {
   const s = getState();
-  const nonce = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  const nonce = msg.nonce ?? newMessageNonce();
   const optimistic: Message = {
     id: `pending-${nonce}`,
     channelId,
@@ -573,7 +618,7 @@ export async function sendMessage(channelId: string, msg: OutgoingMessage): Prom
     author: s.me,
     content: msg.content,
     kind: 'default',
-    replyTo: null,
+    replyTo: msg.replyToId ? {id:msg.replyToId,author:null,content:''} : null,
     attachments: [],
     embeds: [],
     reactions: [],
@@ -589,14 +634,16 @@ export async function sendMessage(channelId: string, msg: OutgoingMessage): Prom
     setState((st) => {
       const list = st.messages[channelId];
       if (!list?.atLatest) return {};
-      return { messages: { ...st.messages, [channelId]: { ...list, items: [...list.items, optimistic] } } };
+      return { messages: { ...st.messages, [channelId]: { ...list, items: [...list.items.filter(m=>m.id!==optimistic.id), optimistic] } } };
     });
   }
   try {
     const sent = await api.post<Message>(`/channels/${channelId}/messages`, { ...msg, nonce });
+    if(getState().me?.id!==s.me?.id)return false;
     onMessageNew(sent);
     return true;
   } catch (err) {
+    if(getState().me?.id!==s.me?.id)return false;
     patchMessage(channelId, optimistic.id, (m) => ({ ...m, failed: true, pending: false }));
     toast(errorMessage(err, 'Не удалось отправить сообщение'), 'error');
     return false;

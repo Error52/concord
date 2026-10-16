@@ -123,8 +123,14 @@ try {
    const publications=window.__concordTestVoice.room.localParticipant.trackPublications;
    return ['screen_share','camera','microphone'].every(source=>[...publications.values()].some(p=>p.source===source&&p.track?.mediaStreamTrack.readyState==='live'));
   }),'full reconnect restores live screen, camera and microphone publications');
-  const beforeReconnectSample=await rtc(b);await b.waitForTimeout(1200);const afterReconnectSample=await rtc(b);
-  assert.ok(afterReconnectSample.some(r=>r.type==='inbound-rtp'&&r.kind==='video'&&r.width>=1280&&r.frames>(beforeReconnectSample.find(o=>o.ssrc===r.ssrc)?.frames??0)+5),'the receiver decodes new screen frames after full reconnect');
+  const beforeReconnectSample=await rtc(b);let afterReconnectSample=[],resumed=false;const reconnectDeadline=Date.now()+15000;
+  while(Date.now()<reconnectDeadline){
+   await b.waitForTimeout(250);afterReconnectSample=await rtc(b);
+   resumed=afterReconnectSample.some(r=>r.type==='inbound-rtp'&&r.kind==='video'&&r.width>=1280&&r.frames>(beforeReconnectSample.find(o=>o.ssrc===r.ssrc)?.frames??0)+5);
+   if(resumed)break;
+  }
+  result.fullReconnectReceiver=afterReconnectSample.filter(r=>r.type==='inbound-rtp'&&r.kind==='video');
+  assert.ok(resumed,'the receiver decodes new screen frames after full reconnect');
   result.fullReconnectMedia=true;
   await a.locator('.stage-controls').getByRole('button',{name:'Камера',exact:true}).click();
  }

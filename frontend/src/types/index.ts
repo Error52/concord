@@ -192,6 +192,8 @@ export interface ReadState {
 }
 
 export interface Notification {
+  revision?: string;
+  unread?: number;
   id: string;
   type: 'mention' | 'everyone' | 'dm' | 'friend_request' | 'friend_accept' | 'call' | 'server';
   data: Record<string, any>;
@@ -226,6 +228,8 @@ export interface Gif {
 }
 
 export interface IncomingCall {
+  id?: string;
+  timeoutSec?: number;
   channelId: string;
   caller: User;
   video: boolean;
@@ -237,7 +241,7 @@ export interface ReadyPayload {
   dms: Dm[];
   relationships: Relation[];
   readStates: ReadState[];
-  notifications: { items: Notification[]; unread: number };
+  notifications: { items: Notification[]; unread: number;revision?:string };
   dmVoiceStates: VoiceState[];
   voiceState: VoiceState | null;
   incomingCalls: IncomingCall[];

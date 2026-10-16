@@ -44,6 +44,8 @@ interface Conn {
   servers: Set<string>;
   alive: boolean;
   seq: number;
+  ready: boolean;
+  pending: Dispatch[];
 }
 
 const clientOp = z.discriminatedUnion('op', [
@@ -62,9 +64,9 @@ const clientOp = z.discriminatedUnion('op', [
   }),
   z.object({ op: z.literal(Op.VoiceSpeaking), d: z.object({ speaking: z.boolean() }) }),
   z.object({ op: z.literal(Op.CallRing), d: z.object({ channelId: z.string().uuid(), video: z.boolean() }) }),
-  z.object({ op: z.literal(Op.CallAccept), d: z.object({ channelId: z.string().uuid() }) }),
-  z.object({ op: z.literal(Op.CallDecline), d: z.object({ channelId: z.string().uuid() }) }),
-  z.object({ op: z.literal(Op.CallEnd), d: z.object({ channelId: z.string().uuid(), durationSec: z.number().nullable().optional() }) }),
+  z.object({ op: z.literal(Op.CallAccept), d: z.object({ channelId: z.string().uuid(),ringId:z.string().uuid().optional() }) }),
+  z.object({ op: z.literal(Op.CallDecline), d: z.object({ channelId: z.string().uuid(),ringId:z.string().uuid().optional() }) }),
+  z.object({ op: z.literal(Op.CallEnd), d: z.object({ channelId: z.string().uuid(), durationSec: z.number().finite().min(0).max(604800).nullable().optional() }) }),
   z.object({ op: z.literal(Op.SetStatus), d: z.object({ status: z.enum(['online', 'idle', 'dnd', 'invisible']) }) }),
 ]);
 
@@ -147,6 +149,10 @@ export class Gateway {
     const frame = (seq: number): string => JSON.stringify({ t: msg.t, d: msg.d, s: seq });
     for (const c of targets) {
       if (msg.exceptUser && c.userId === msg.exceptUser) continue;
+      if(!c.ready){
+        if(c.pending.length>=512){c.ws.close(Close.ServerShutdown,'snapshot queue overflow');continue;}
+        c.pending.push(msg);continue;
+      }
       if (c.ws.readyState === WebSocket.OPEN) c.ws.send(frame(++c.seq));
     }
   }
@@ -172,10 +178,10 @@ export class Gateway {
   // ─────────────── connection lifecycle ───────────────
 
   private onConnection(ws: WebSocket): void {
-    const conn: Conn = { id: randomUUID(), ws, userId: null, sessionId: null, servers: new Set(), alive: true, seq: 0 };
+    const conn: Conn = { id: randomUUID(), ws, userId: null, sessionId: null, servers: new Set(), alive: true, seq: 0,ready:false,pending:[] };
     this.conns.set(conn.id, conn);
     const authTimer = setTimeout(() => {
-      if (!conn.userId) ws.close(Close.AuthTimeout, 'auth timeout');
+      if (!conn.ready) ws.close(Close.AuthTimeout, 'auth timeout');
     }, AUTH_TIMEOUT_MS);
 
     ws.on('pong', () => {
@@ -214,6 +220,10 @@ export class Gateway {
       await rateLimit({ name: 'ws', max: 120, windowSec: 10 }, conn.userId);
       await this.handleOp(conn, conn.userId, parsed);
     } catch (err) {
+      if(parsed.op===Op.Auth){
+        log.warn('gateway snapshot failed; reconnect required',{err});
+        conn.pending=[];conn.ws.close(Close.ServerShutdown,'snapshot failed');return;
+      }
       if (err instanceof AppError) {
         if (err.status === 429 && parsed.op !== Op.Heartbeat) this.send(conn, 'error', { code: err.code, message: err.message, op: parsed.op });
         else if (err.status !== 429) this.send(conn, 'error', { code: err.code, message: err.message, op: parsed.op });
@@ -260,10 +270,10 @@ export class Gateway {
         await calls.ring(op.d.channelId, userId, op.d.video);
         break;
       case Op.CallAccept:
-        await calls.accept(op.d.channelId, userId);
+        await calls.accept(op.d.channelId, userId,op.d.ringId);
         break;
       case Op.CallDecline:
-        await calls.decline(op.d.channelId, userId);
+        await calls.decline(op.d.channelId, userId,op.d.ringId);
         break;
       case Op.CallEnd:
         await calls.end(op.d.channelId, userId, op.d.durationSec ?? null);
@@ -304,6 +314,11 @@ export class Gateway {
 
     const ready = await this.buildReady(user.id, serverIds);
     this.send(conn, Ev.Ready, ready);
+    conn.ready=true;
+    for(const event of conn.pending){
+      if(event.target.users?.includes(user.id)||(event.target.server&&conn.servers.has(event.target.server)))this.send(conn,event.t,event.d);
+    }
+    conn.pending=[];
   }
 
   private async buildReady(userId: string, serverIds: string[]) {

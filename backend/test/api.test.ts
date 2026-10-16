@@ -14,12 +14,13 @@ import {captureSmtp} from './smtpCapture.js';
 import {createServer} from 'node:http';
 import {markJoined,markLeft,forceDisconnectUser,handleWebhook,updateSelfState} from '../src/services/voiceService.js';
 import {Perm} from '../src/models/permissions.js';
-import {pendingRings} from '../src/services/callService.js';
+import {pendingRings,ring as ringCall,decline as declineCall,accept as acceptCall} from '../src/services/callService.js';
 import {redis} from '../src/redis.js';
-import {react} from '../src/services/messageService.js';
-import {notify} from '../src/services/notificationService.js';
+import {react,create as createMessage} from '../src/services/messageService.js';
+import {notify,list as listNotifications,markRead as readNotifications,clear as clearNotifications} from '../src/services/notificationService.js';
 import {resendEmailVerification,confirmEmail} from '../src/services/authService.js';
 import {openMail} from '../src/services/mailCrypto.js';
+import {joinPublic,ban as banMember} from '../src/services/serverService.js';
 
 let h: Harness;
 const c = (): Client => new Client(h.base);
@@ -492,6 +493,77 @@ test('concurrent server moderation preserves a newer self-mute state',async()=>{
  },{UpdateParticipant:async()=>{received();await gate;return {};}});
 });
 
+test('simultaneous voice joins are recorded once and switching removes the old SFU participant',async()=>{
+ const {owner,member,serverId,voice}=await serverWithMember();
+ const second=(await owner.post(`/api/servers/${serverId}/channels`,{name:'Second voice',type:'voice'})).body;
+ await withLiveKitCapture(async calls=>{
+  await Promise.all(Array.from({length:5},()=>markJoined(member.user.id,voice.id)));
+  const rows=await pool.query(`SELECT count(*)::int AS n FROM voice_participants WHERE user_id=$1 AND left_at IS NULL`,[member.user.id]);assert.equal(rows.rows[0].n,1);
+  await markJoined(member.user.id,second.id);
+  assert.ok(calls.some(c=>c.method==='RemoveParticipant'&&c.room===`ch_${voice.id}`&&c.identity===member.user.id));
+  assert.equal(await redis.sismember(`voice:room:${voice.id}`,member.user.id),0);assert.equal(await redis.sismember(`voice:room:${second.id}`,member.user.id),1);
+  await markLeft(member.user.id,voice.id);assert.equal(JSON.parse((await redis.get(`voice:user:${member.user.id}`))!).channelId,second.id);
+  await markLeft(member.user.id,second.id);
+ });
+});
+
+test('two users swapping voice rooms cannot deadlock their session history',async(t)=>{
+ const {owner,member,serverId,voice}=await serverWithMember();const second=(await owner.post(`/api/servers/${serverId}/channels`,{name:'Swap voice',type:'voice'})).body;
+ await withLiveKitCapture(async()=>{
+  await markJoined(owner.user.id,voice.id);await markJoined(member.user.id,second.id);
+  const client=await pool.connect(),prototype=Object.getPrototypeOf(client),original=prototype.query;client.release();
+  let release!:()=>void,arrived!:()=>void,count=0;const gate=new Promise<void>(r=>release=r),waiting=new Promise<void>(r=>arrived=r);
+  t.mock.method(prototype,'query',function(this:any,...args:any[]){const result=original.apply(this,args);if(typeof args[0]==='string'&&/UPDATE voice_sessions SET ended_at = now\(\)/.test(args[0])&&count<2)return result.then(async(row:any)=>{if(++count===2)arrived();await gate;return row;});return result;});
+  const swapping=Promise.all([markJoined(owner.user.id,second.id),markJoined(member.user.id,voice.id)]);
+  try{await Promise.race([waiting,sleep(150)]);}finally{release();}
+  await swapping;
+  assert.equal(JSON.parse((await redis.get(`voice:user:${owner.user.id}`))!).channelId,second.id);
+  assert.equal(JSON.parse((await redis.get(`voice:user:${member.user.id}`))!).channelId,voice.id);
+  await markLeft(owner.user.id,second.id);await markLeft(member.user.id,voice.id);
+ });
+});
+
+test('gateway delivers events created during its ready snapshot after ready',async(t)=>{
+ const user=await c().register('ready_event_order');const instance=h.app.gateway as any,original=instance.buildReady.bind(instance);
+ t.mock.method(instance,'buildReady',async(...args:any[])=>{const ready=await original(...args);await notify([user.user.id],'server',{content:'during ready'});await sleep(30);return ready;});
+ const {WebSocket}=await import('ws');const ws=new WebSocket(h.base.replace('http','ws')+'/gateway');const frames:{t:string;d:any}[]=[];
+ try{
+  await new Promise<void>((resolve,reject)=>{const timer=setTimeout(()=>reject(new Error('ready event timeout')),3000);ws.on('message',raw=>{const frame=JSON.parse(raw.toString());frames.push(frame);if(frames.some(f=>f.t==='ready')&&frames.some(f=>f.t==='notification:new')){clearTimeout(timer);resolve();}});ws.once('open',()=>ws.send(JSON.stringify({op:'auth',d:{token:user.token}})));});
+  assert.ok(frames.findIndex(f=>f.t==='ready')<frames.findIndex(f=>f.t==='notification:new'));
+ }finally{ws.close();}
+});
+
+test('a failed ready snapshot closes for reconnect instead of leaving a half-authenticated socket',async(t)=>{
+ const user=await c().register('ready_snapshot_failure');t.mock.method(h.app.gateway as any,'buildReady',async()=>{throw new Error('simulated snapshot failure');});
+ const {WebSocket}=await import('ws');const ws=new WebSocket(h.base.replace('http','ws')+'/gateway');
+ try{
+  const code=await new Promise<number>((resolve,reject)=>{const timer=setTimeout(()=>reject(new Error('snapshot failure left the socket open')),1500);ws.once('close',code=>{clearTimeout(timer);resolve(code);});ws.once('open',()=>ws.send(JSON.stringify({op:'auth',d:{token:user.token}})));});
+  assert.equal(code,4009);
+ }finally{ws.close();}
+});
+
+test('failed SFU moderation removes the participant instead of pretending mute succeeded',async()=>{
+ const {owner,member,serverId,voice}=await serverWithMember();const calls:string[]=[];
+ const fake=createServer(async(req,res)=>{for await(const chunk of req){void chunk;}const method=req.url!.split('/').at(-1)!;calls.push(method);res.setHeader('Content-Type','application/json');res.statusCode=method==='UpdateParticipant'?500:200;res.end('{}');});
+ await new Promise<void>(r=>fake.listen(0,'127.0.0.1',r));const previous=config.LIVEKIT_URL;config.LIVEKIT_URL=`http://127.0.0.1:${(fake.address() as import('node:net').AddressInfo).port}`;
+ try{
+  await markJoined(member.user.id,voice.id);
+  const muted=await owner.patch(`/api/servers/${serverId}/voice/${member.user.id}`,{serverMute:true});assert.equal(muted.status,200);
+  assert.ok(calls.includes('RemoveParticipant'));assert.equal(await redis.get(`voice:user:${member.user.id}`),null);
+  assert.equal(JSON.parse((await redis.get(`voice:mod:${serverId}:${member.user.id}`))!).serverMute,true);
+ }finally{config.LIVEKIT_URL=previous;await markLeft(member.user.id,voice.id);await new Promise<void>(r=>fake.close(()=>r()));}
+});
+
+test('notification revisions order concurrent mutations and consistent snapshots',async()=>{
+ const user=await c().register('notification_revisions');const revisions:string[]=[];
+ await Promise.all(Array.from({length:6},(_,i)=>notify([user.user.id],'server',{content:String(i)})));
+ const first=await listNotifications(user.user.id);assert.equal(first.unread,6);assert.equal(first.items.filter(n=>!n.read).length,6);revisions.push(first.revision);
+ const read=await readNotifications(user.user.id,[first.items[0]!.id]);assert.equal(read.unread,5);revisions.push(read.revision);
+ const cleared=await clearNotifications(user.user.id);assert.equal(cleared.unread,0);revisions.push(cleared.revision);
+ const final=await listNotifications(user.user.id);assert.equal(final.unread,0);assert.equal(final.items.length,0);assert.equal(final.revision,cleared.revision);
+ assert.ok(BigInt(revisions[0]!)<BigInt(revisions[1]!)&&BigInt(revisions[1]!)<BigInt(revisions[2]!));
+});
+
 test('late voice webhooks recheck access and old token publishing permissions',async()=>{
  const {owner,member,serverId,voice,full}=await serverWithMember();
  const base=full.roles.find((r:any)=>r.isDefault);
@@ -577,6 +649,95 @@ test('admin panel: only platform admins manage special badges; they show on prof
 });
 
 // ───────────────────────────── messages ─────────────────────────────
+
+test('message nonce retries create one row, one mention and one notification',async()=>{
+ const {owner,member,general}=await serverWithMember();
+ const input={content:`retry <@${owner.user.id}>`,nonce:'same-request'};
+ const sent=await Promise.all(Array.from({length:4},()=>member.post(`/api/channels/${general.id}/messages`,input)));
+ assert.ok(sent.every(r=>r.status===201),JSON.stringify(sent.map(r=>r.body)));
+ assert.equal(new Set(sent.map(r=>r.body.id)).size,1);
+ assert.equal((await pool.query(`SELECT count(*)::int AS n FROM messages WHERE channel_id=$1 AND kind='default'`,[general.id])).rows[0].n,1);
+ assert.equal((await pool.query(`SELECT mention_count FROM read_states WHERE channel_id=$1 AND user_id=$2`,[general.id,owner.user.id])).rows[0].mention_count,1);
+ assert.equal((await owner.get('/api/notifications')).body.items.filter((n:any)=>n.data.channelId===general.id).length,1);
+ const changed=await member.post(`/api/channels/${general.id}/messages`,{...input,content:'different payload'});
+ assert.equal(changed.status,409);assert.equal(changed.body.error.code,'NONCE_CONFLICT');
+});
+
+test('a ban racing with public join cannot leave a banned member inside the server',async(t)=>{
+ const {owner,serverId}=await serverWithMember(),outsider=await c().register('join_ban_race');await pool.query(`UPDATE servers SET is_public=true WHERE id=$1`,[serverId]);
+ const client=await pool.connect(),prototype=Object.getPrototypeOf(client),original=prototype.query;client.release();
+ let release!:()=>void,checked!:()=>void,gated=false;const gate=new Promise<void>(r=>release=r),waiting=new Promise<void>(r=>checked=r);
+ t.mock.method(prototype,'query',function(this:any,...args:any[]){
+  if(!gated&&typeof args[0]==='string'&&/SELECT 1 FROM bans/.test(args[0])&&args[1]?.includes(outsider.user.id)){
+    gated=true;
+    if(typeof args[2]==='function'){const callback=args[2];args[2]=(...results:any[])=>{checked();void gate.then(()=>callback(...results));};return original.apply(this,args);}
+    return original.apply(this,args).then(async(result:any)=>{checked();await gate;return result;});
+  }
+  return original.apply(this,args);
+ });
+ const joining=joinPublic(serverId,outsider.user.id).then(()=>null,err=>err);await waiting;
+ const banning=banMember(serverId,owner.user.id,outsider.user.id);
+ try{await Promise.race([banning,sleep(250)]);}finally{release();}
+ await banning;await joining;
+ assert.equal((await pool.query(`SELECT 1 FROM server_members WHERE server_id=$1 AND user_id=$2`,[serverId,outsider.user.id])).rowCount,0);
+ assert.equal((await pool.query(`SELECT 1 FROM bans WHERE server_id=$1 AND user_id=$2`,[serverId,outsider.user.id])).rowCount,1);
+});
+
+test('an older concurrent message commit cannot move channel and read markers backwards',async(t)=>{
+ const {member,general}=await serverWithMember();const client=await pool.connect(),prototype=Object.getPrototypeOf(client),original=prototype.query;client.release();
+ let release!:()=>void,inserted!:()=>void;const gate=new Promise<void>(r=>release=r),waiting=new Promise<void>(r=>inserted=r);
+ t.mock.method(prototype,'query',function(this:any,...args:any[]){
+  const result=original.apply(this,args);
+  if(typeof args[0]==='string'&&/INSERT INTO messages/.test(args[0])&&args[1]?.includes('older-commit'))return result.then(async(row:any)=>{inserted();await gate;return row;});
+  return result;
+ });
+ const older=createMessage(general.id,member.user.id,{content:'older',nonce:'older-commit'});await waiting;
+ let newer:any;
+ try{newer=await createMessage(general.id,member.user.id,{content:'newer',nonce:'newer-commit'});await pool.query(`UPDATE read_states SET mention_count=1 WHERE channel_id=$1 AND user_id=$2`,[general.id,member.user.id]);}finally{release();}
+ const old=await older;assert.ok(BigInt(old.id)<BigInt(newer.id));
+ assert.equal((await pool.query(`SELECT last_message_id FROM channels WHERE id=$1`,[general.id])).rows[0].last_message_id,newer.id);
+ assert.deepEqual((await pool.query(`SELECT last_read_id,mention_count FROM read_states WHERE channel_id=$1 AND user_id=$2`,[general.id,member.user.id])).rows[0],{last_read_id:newer.id,mention_count:1});
+});
+
+test('message nonce retry survives used attachments and an active slowmode timer',async()=>{
+ const {owner,member,general}=await serverWithMember();
+ await owner.patch(`/api/channels/${general.id}`,{slowmodeSeconds:30});
+ const file=await member.req('POST',`/api/channels/${general.id}/attachments`,Buffer.from('retry file'),{'Content-Type':'text/plain','X-File-Name':'retry.txt'});
+ assert.equal(file.status,201);
+ const input={content:'with attachment',attachmentIds:[file.body.id],nonce:'attachment-retry'};
+ const first=await member.post(`/api/channels/${general.id}/messages`,input);assert.equal(first.status,201);
+ const retry=await member.post(`/api/channels/${general.id}/messages`,input);assert.equal(retry.status,201);assert.equal(retry.body.id,first.body.id);assert.equal(retry.body.attachments.length,1);
+ const fresh=await member.post(`/api/channels/${general.id}/messages`,{content:'new',nonce:'new-request'});assert.equal(fresh.status,429);
+});
+
+test('slowmode rejection of an invalid reply does not consume the send window',async()=>{
+ const {owner,member,general}=await serverWithMember();await owner.patch(`/api/channels/${general.id}`,{slowmodeSeconds:30});
+ const bad=await member.post(`/api/channels/${general.id}/messages`,{content:'bad reply',replyToId:'999999999999'});assert.equal(bad.status,400);
+ const good=await member.post(`/api/channels/${general.id}/messages`,{content:'valid'});assert.equal(good.status,201);
+});
+
+test('message committed before a broadcast failure still reports success',async(t)=>{
+ const {member,general}=await serverWithMember();
+ t.mock.method(redis,'publish',async()=>{throw new Error('simulated Redis publish outage');});
+ const sent=await member.post(`/api/channels/${general.id}/messages`,{content:'durable',nonce:'publish-failure'});
+ assert.equal(sent.status,201);assert.ok(sent.body.id);
+ assert.equal((await member.get(`/api/channels/${general.id}/messages`)).body.filter((m:any)=>m.content==='durable').length,1);
+});
+
+test('ring lifecycle rejects stale actions and records one concurrent decline',async()=>{
+ const a=await c().register('ring_race_a'),b=await c().register('ring_race_b');const dm=(await a.post('/api/dm',{recipientId:b.user.id})).body.id;
+ await Promise.all(Array.from({length:4},()=>ringCall(dm,a.user.id,false)));
+ const first=JSON.parse((await redis.get(`call:ring:${dm}`))!);
+ assert.ok(first.id);
+ assert.equal((await b.get('/api/notifications')).body.items.filter((n:any)=>n.type==='call').length,1);
+ await Promise.all(Array.from({length:4},()=>declineCall(dm,b.user.id,first.id)));
+ assert.equal((await pool.query(`SELECT count(*)::int AS n FROM messages WHERE channel_id=$1 AND content='call:missed'`,[dm])).rows[0].n,1);
+ await ringCall(dm,a.user.id,true);const second=JSON.parse((await redis.get(`call:ring:${dm}`))!);assert.notEqual(second.id,first.id);
+ await declineCall(dm,b.user.id,first.id);await acceptCall(dm,b.user.id,first.id);
+ assert.equal(JSON.parse((await redis.get(`call:ring:${dm}`))!).id,second.id);
+ await acceptCall(dm,a.user.id,second.id);assert.ok(await redis.get(`call:ring:${dm}`),'caller cannot accept own ringing call');
+ await acceptCall(dm,b.user.id,second.id);assert.equal(await redis.get(`call:ring:${dm}`),null);
+});
 
 test('messages: realtime delivery, edit/delete permissions, reactions, replies, mentions', async () => {
   const { owner, member, serverId, general } = await serverWithMember();

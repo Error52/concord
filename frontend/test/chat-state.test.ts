@@ -92,6 +92,20 @@ test('late duplicate sends do not move the channel and read marker backwards',()
  assert.equal(getState().channels[channelId]!.lastMessageId,'300');assert.equal(getState().readStates[channelId]!.lastReadId,'300');
 });
 
+test('duplicate message delivery does not count a mention twice',()=>{
+ reset();const m={...message('400'),mentionIds:['me'],author:{id:'other'} as any};
+ event('message:new',m);event('message:new',m);
+ assert.equal(getState().readStates[channelId]!.mentionCount,1);
+});
+
+test('a stale call dismissal does not hide a newer ring in the same DM',()=>{
+ reset();const incoming={channelId,caller:{id:'other'},video:false,timeoutSec:45};
+ event('call:incoming',{...incoming,id:'first'});event('call:incoming',{...incoming,id:'second'});
+ event('call:declined',{channelId,ringId:'first'});
+ assert.equal((getState().incomingCalls[0] as any)?.id,'second');
+ event('call:declined',{channelId,ringId:'second'});assert.equal(getState().incomingCalls.length,0);
+});
+
 const notification=(id:string):Notification=>({id,type:'server',data:{},read:false,createdAt:'2026-10-16T00:00:00Z'});
 test('notification read responses leave later arrivals unread',async(t)=>{
  reset();appStore.set({notifications:[notification('old')],unreadNotifications:1});const response=deferred<{ids:string[];unreadChanged:number}>();
@@ -120,6 +134,24 @@ test('a fresh ready snapshot supersedes an older notification acknowledgement',a
  reset();const response=deferred<{ids:string[];unreadChanged:number}>();t.mock.method(api,'post',()=>response.promise);const reading=markNotificationsRead();
  event('ready',{user:{id:'me'},dms:[],relationships:[],readStates:[],notifications:{items:[notification('fresh')],unread:1},incomingCalls:[],features:{gif:{enabled:false}},servers:[],dmVoiceStates:[],voiceState:null});
  response.resolve({ids:['old'],unreadChanged:100});await reading;assert.equal(getState().unreadNotifications,1);assert.equal(getState().notifications[0]!.id,'fresh');
+});
+
+test('late notification events already included in ready do not change the fresh counter',()=>{
+ reset();event('ready',{user:{id:'me'},dms:[],relationships:[],readStates:[],notifications:{items:[{...notification('old'),read:true},notification('fresh')],unread:1,revision:'4'},incomingCalls:[],features:{gif:{enabled:false}},servers:[],dmVoiceStates:[],voiceState:null});
+ event('notification:read',{mutationId:'late-read',ids:['old'],unreadChanged:1,unread:0,revision:'3'});
+ event('notification:new',{...notification('old'),revision:'2',unread:1});
+ assert.equal(getState().unreadNotifications,1);assert.equal(getState().notifications.find(n=>n.id==='old')!.read,true);
+});
+
+test('out of order notification events retain the latest count and each row state',()=>{
+ reset();event('ready',{user:{id:'me'},dms:[],relationships:[],readStates:[],notifications:{items:[],unread:0,revision:'0'},incomingCalls:[],features:{gif:{enabled:false}},servers:[],dmVoiceStates:[],voiceState:null});
+ event('notification:new',{...notification('new'),revision:'3',unread:1});
+ event('notification:read',{mutationId:'read-before-create',ids:['old'],unreadChanged:1,unread:0,revision:'2'});
+ event('notification:new',{...notification('old'),revision:'1',unread:1});
+ assert.equal(getState().unreadNotifications,1);assert.equal(getState().notifications.find(n=>n.id==='old')!.read,true);
+ event('notification:clear',{mutationId:'clear-before-create',ids:['deleted'],unreadChanged:1,revision:'5',unread:1});
+ event('notification:new',{...notification('deleted'),revision:'4',unread:2});
+ assert.equal(getState().notifications.some(n=>n.id==='deleted'),false);assert.equal(getState().unreadNotifications,1);
 });
 test('failed DM close keeps the conversation and current route',async(t)=>{
  reset();const dm={id:channelId,recipients:[],lastMessageId:'100'} as any;appStore.set({dms:{[channelId]:dm}});routerStore.set({route:{name:'dm',channelId}});

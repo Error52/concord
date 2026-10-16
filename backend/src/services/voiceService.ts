@@ -1,4 +1,4 @@
-import { execute, query, queryOne, tx } from '../db/pool.js';
+import { execute, query, queryOne, tx, pool, type Queryable } from '../db/pool.js';
 import { redis } from '../redis.js';
 import { config } from '../config.js';
 import { Errors, AppError } from '../http/errors.js';
@@ -39,9 +39,9 @@ async function patchState(userId:string,channelId:string,patch:object):Promise<{
   return raw?{before:JSON.parse(raw[0]),after:JSON.parse(raw[1])}:null;
 }
 
-async function targetFor(channelId: string, serverId: string | null): Promise<Target> {
+async function targetFor(channelId: string, serverId: string | null,db:Queryable=pool): Promise<Target> {
   if (serverId) return { server: serverId };
-  const peers = await query<{ user_id: string }>(`SELECT user_id FROM channel_members WHERE channel_id = $1`, [channelId]);
+  const peers = await query<{ user_id: string }>(`SELECT user_id FROM channel_members WHERE channel_id = $1`, [channelId],db);
   return { users: peers.map((p) => p.user_id) };
 }
 
@@ -94,11 +94,21 @@ export async function join(userId: string, channelId: string) {
 
 /** Marks a user present in a room (from the client's "connected" op or the LiveKit webhook). */
 export async function markJoined(userId: string, channelId: string): Promise<void> {
-  const ch = await queryOne<{ server_id: string | null }>(`SELECT server_id FROM channels WHERE id = $1`, [channelId]);
+  await tx(async db=>{
+  await execute(`SELECT pg_advisory_xact_lock(hashtextextended($1,0))`,[`voice-state:${userId}`],db);
+  const ch = await queryOne<{ server_id: string | null }>(`SELECT server_id FROM channels WHERE id = $1`, [channelId],db);
   if (!ch) return;
   const prev = await getState(userId);
   if (prev?.channelId === channelId) return;
-  if (prev) await markLeft(userId, prev.channelId);
+  // A swap touches two active-session rows. Acquire both rooms in a stable order.
+  for(const id of [...new Set([channelId,...(prev?[prev.channelId]:[])])].sort()){
+    await execute(`SELECT pg_advisory_xact_lock(hashtextextended($1,0))`,[`voice-room:${id}`],db);
+  }
+  if (prev) {
+    await emit(Ev.VoiceForceDisconnect,{channelId:prev.channelId},{users:[userId]});
+    await removeParticipant(roomName(prev.channelId),userId);
+    await markLeftLocked(userId,prev.channelId,db);
+  }
   const mod = await getModeration(ch.server_id, userId);
   const state: VoiceStateDTO = {
     userId,
@@ -113,19 +123,27 @@ export async function markJoined(userId: string, channelId: string): Promise<voi
     joinedAt: new Date().toISOString(),
   };
   await redis.multi().set(userKey(userId), JSON.stringify(state)).sadd(roomKey(channelId), userId).exec();
-  await recordJoin(userId, channelId);
-  await emit(Ev.VoiceJoin, state, await targetFor(channelId, ch.server_id));
+  await recordJoin(userId, channelId,db);
+  await emit(Ev.VoiceJoin, state, await targetFor(channelId, ch.server_id,db));
+  });
 }
 
 export async function markLeft(userId: string, channelId?: string): Promise<void> {
+  await tx(async db=>{
+    await execute(`SELECT pg_advisory_xact_lock(hashtextextended($1,0))`,[`voice-state:${userId}`],db);
+    await markLeftLocked(userId,channelId,db);
+  });
+}
+async function markLeftLocked(userId:string,channelId:string|undefined,db:Queryable):Promise<void>{
   const state = await getState(userId);
   if (!state || (channelId && state.channelId !== channelId)) return;
+  await execute(`SELECT pg_advisory_xact_lock(hashtextextended($1,0))`,[`voice-room:${state.channelId}`],db);
   const removed=await redis.eval(`local raw=redis.call('GET',KEYS[1]);if not raw or cjson.decode(raw).channelId~=ARGV[1] then return 0 end
     redis.call('DEL',KEYS[1]);redis.call('SREM',KEYS[2],ARGV[2]);return 1`,2,userKey(userId),roomKey(state.channelId),state.channelId,userId);
   if(!removed)return;
-  await recordLeave(userId, state.channelId);
-  if (state.screen) await emit(Ev.ScreenStop, { userId, channelId: state.channelId }, await targetFor(state.channelId, state.serverId));
-  await emit(Ev.VoiceLeave, { userId, channelId: state.channelId, serverId: state.serverId }, await targetFor(state.channelId, state.serverId));
+  await recordLeave(userId, state.channelId,db);
+  if (state.screen) await emit(Ev.ScreenStop, { userId, channelId: state.channelId }, await targetFor(state.channelId, state.serverId,db));
+  await emit(Ev.VoiceLeave, { userId, channelId: state.channelId, serverId: state.serverId }, await targetFor(state.channelId, state.serverId,db));
 }
 
 export async function updateSelfState(
@@ -219,9 +237,10 @@ export async function setServerMute(actorId: string, serverId: string, targetId:
     const connected=!!access&&has(access.perms,Perm.CONNECT);
     await applyModeration(roomName(state.channelId), targetId, {
       ...next,allowVideo:connected&&has(access!.perms,Perm.VIDEO),allowSpeak:connected&&has(access!.perms,Perm.SPEAK),
-    }).catch((err) =>
-      log.warn('livekit moderation failed', { err }),
-    );
+    }).catch(async(err) => {
+      log.warn('livekit moderation failed; disconnecting participant', { err });
+      await forceDisconnectUser(targetId,serverId,state.channelId);
+    });
     const updated=await patchState(targetId,state.channelId,next);
     if(updated)await emit(Ev.VoiceState, updated.after, { server: serverId });
   }
@@ -298,24 +317,25 @@ export async function handleWebhook(ev: WebhookEvent): Promise<void> {
   }
 }
 
-async function recordJoin(userId: string, channelId: string): Promise<void> {
+async function recordJoin(userId: string, channelId: string,db:Queryable): Promise<void> {
   const room = roomName(channelId);
   const session = await queryOne<{ id: string }>(
-    `WITH ins AS (
-       INSERT INTO voice_sessions (channel_id, room_name) VALUES ($1, $2) ON CONFLICT (room_name) WHERE ended_at IS NULL DO NOTHING RETURNING id
-     ) SELECT id FROM ins UNION ALL SELECT id FROM voice_sessions WHERE room_name = $2 AND ended_at IS NULL LIMIT 1`,
+    `INSERT INTO voice_sessions (channel_id, room_name) VALUES ($1,$2)
+       ON CONFLICT (room_name) WHERE ended_at IS NULL DO UPDATE SET room_name=EXCLUDED.room_name RETURNING id`,
     [channelId, room],
+    db,
   );
-  if (session) await execute(`INSERT INTO voice_participants (session_id, user_id) VALUES ($1, $2)`, [session.id, userId]);
+  if (session) await execute(`INSERT INTO voice_participants (session_id, user_id) VALUES ($1, $2)`, [session.id, userId],db);
 }
 
-async function recordLeave(userId: string, channelId: string): Promise<void> {
+async function recordLeave(userId: string, channelId: string,db:Queryable): Promise<void> {
   const room = roomName(channelId);
   await execute(
     `UPDATE voice_participants SET left_at = now()
       WHERE user_id = $1 AND left_at IS NULL AND session_id IN (SELECT id FROM voice_sessions WHERE room_name = $2 AND ended_at IS NULL)`,
     [userId, room],
+    db,
   );
   const remaining = await redis.scard(roomKey(channelId));
-  if (remaining === 0) await execute(`UPDATE voice_sessions SET ended_at = now() WHERE room_name = $1 AND ended_at IS NULL`, [room]);
+  if (remaining === 0) await execute(`UPDATE voice_sessions SET ended_at = now() WHERE room_name = $1 AND ended_at IS NULL`, [room],db);
 }

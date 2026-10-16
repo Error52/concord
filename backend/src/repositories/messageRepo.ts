@@ -7,6 +7,7 @@ export interface MessageRow {
   channel_id: string;
   server_id: string | null;
   author_id: string | null;
+  client_nonce: string | null;
   content: string;
   kind: 'default' | 'system';
   reply_to_id: string | null;
@@ -18,7 +19,7 @@ export interface MessageRow {
   created_at: Date;
 }
 
-export const MESSAGE_COLUMNS = `m.id, m.channel_id, c.server_id, m.author_id, m.content, m.kind, m.reply_to_id, m.embeds,
+export const MESSAGE_COLUMNS = `m.id, m.channel_id, c.server_id, m.author_id, m.client_nonce, m.content, m.kind, m.reply_to_id, m.embeds,
   m.mention_ids, m.mentions_everyone, m.pinned, m.edited_at, m.created_at`;
 
 export async function findMessage(id: string): Promise<MessageRow | null> {
@@ -97,6 +98,7 @@ export async function hydrate(rows: MessageRow[], viewerId: string): Promise<Mes
     const reply = r.reply_to_id ? replyById.get(r.reply_to_id) : undefined;
     return {
       id: r.id,
+      ...(r.client_nonce && r.author_id === viewerId ? {nonce:r.client_nonce} : {}),
       channelId: r.channel_id,
       serverId: r.server_id,
       author: r.author_id ? (users.get(r.author_id) ?? null) : null,

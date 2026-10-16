@@ -181,7 +181,7 @@ export const MessageItem = memo(function MessageItem({ m, head, canManage, canPi
           <MessageBody m={m} />
           <div className="row" style={{ fontSize: '0.75rem' }}>
             Не удалось отправить сообщение.
-            <button className="link-btn" onClick={() => (discardFailed(m.channelId, m.id), void sendMessage(m.channelId, { content: m.content }))}>
+            <button className="link-btn" onClick={() => (discardFailed(m.channelId, m.id), void sendMessage(m.channelId, { content: m.content,replyToId:m.replyTo?.id,nonce:m.nonce }))}>
               Повторить
             </button>
             <button className="link-btn" onClick={() => discardFailed(m.channelId, m.id)}>

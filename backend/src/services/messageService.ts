@@ -12,6 +12,8 @@ import { audit, AuditAction } from './auditService.js';
 import { loadPublicUser } from '../repositories/userRepo.js';
 import { storage } from '../storage/index.js';
 import type { EmbedDTO, MessageDTO } from '../models/dto.js';
+import { createHash, randomUUID } from 'node:crypto';
+import { log } from '../logger.js';
 
 export const MAX_CONTENT = 4000;
 const URL_RE = /\bhttps?:\/\/[^\s<>]+/i;
@@ -63,14 +65,15 @@ async function assertNotBlocked(ca: ChannelAccess, userId: string): Promise<void
   if (blocked) throw Errors.forbidden('Вы не можете отправить сообщение этому пользователю');
 }
 
-async function enforceSlowmode(ca: ChannelAccess, userId: string): Promise<void> {
+async function enforceSlowmode(ca: ChannelAccess, userId: string, reservation: string): Promise<string | null> {
   const seconds = ca.channel.slowmode_seconds;
-  if (!seconds || canManage(ca, Perm.MANAGE_MESSAGES) || canManage(ca, Perm.MANAGE_CHANNELS)) return;
+  if (!seconds || canManage(ca, Perm.MANAGE_MESSAGES) || canManage(ca, Perm.MANAGE_CHANNELS)) return null;
   const key = `slowmode:${ca.channel.id}:${userId}`;
-  if ((await redis.set(key, '1', 'EX', seconds, 'NX')) !== 'OK') {
+  if ((await redis.set(key, reservation, 'EX', seconds, 'NX')) !== 'OK') {
     const ttl = await redis.ttl(key);
     throw new AppError(429, 'SLOWMODE', `Медленный режим: подождите ${ttl} с`, { retryAfter: ttl });
   }
+  return key;
 }
 
 export async function create(channelId: string, userId: string, input: CreateInput): Promise<MessageDTO> {
@@ -84,7 +87,10 @@ export async function create(channelId: string, userId: string, input: CreateInp
   const content = input.content.trim();
   if (!content && attachmentIds.length === 0 && !input.gif) throw Errors.badRequest('Пустое сообщение');
   if (content.length > MAX_CONTENT) throw Errors.badRequest(`Сообщение длиннее ${MAX_CONTENT} символов`);
-  await enforceSlowmode(ca, userId);
+  const requestHash = createHash('sha256').update(JSON.stringify({
+    content, replyToId: input.replyToId ?? null, attachmentIds: [...attachmentIds].sort(),
+    gif: input.gif ? [input.gif.url,input.gif.previewUrl,input.gif.width,input.gif.height,input.gif.title ?? ''] : null,
+  })).digest('hex');
 
   // Mentions: only real members/participants count; @everyone needs the permission.
   const requested = [...content.matchAll(MENTION_RE)].map((m) => m[1]!.toLowerCase());
@@ -99,13 +105,25 @@ export async function create(channelId: string, userId: string, input: CreateInp
     ? [...new Set([...mentionIds,...(await memberIds(ca.channel.server_id!)).filter(id=>id!==userId)])]
     : mentionIds;
 
-  if (input.replyToId) {
-    const parent = await queryOne(`SELECT 1 FROM messages WHERE id = $1 AND channel_id = $2`, [input.replyToId, channelId]);
-    if (!parent) throw Errors.badRequest('Сообщение для ответа не найдено');
-  }
-
   const embeds = input.gif ? [input.gif] : [];
-  const row = await tx(async (db) => {
+  const reservation = randomUUID();
+  let slowmodeKey: string | null = null;
+  let result: {row: MessageRow; created: boolean};
+  try {
+  result = await tx(async (db) => {
+    if (input.nonce) {
+      await execute(`SELECT pg_advisory_xact_lock(hashtextextended($1,0))`,[`message:${userId}:${channelId}:${input.nonce}`],db);
+      const existing = await queryOne<{id:string;request_hash:string}>(
+        `SELECT id,request_hash FROM messages WHERE author_id=$1 AND channel_id=$2 AND client_nonce=$3`,[userId,channelId,input.nonce],db);
+      if (existing) {
+        if(existing.request_hash!==requestHash)throw Errors.conflict('NONCE_CONFLICT','Этот запрос уже использован для другого сообщения');
+        return {row:(await findMessageTx(existing.id,db))!,created:false};
+      }
+    }
+    if(input.replyToId){
+      const parent=await queryOne(`SELECT 1 FROM messages WHERE id=$1 AND channel_id=$2 FOR KEY SHARE`,[input.replyToId,channelId],db);
+      if(!parent)throw Errors.badRequest('Сообщение для ответа не найдено');
+    }
     let hasImage = false;
     let hasFile = false;
     if (attachmentIds.length) {
@@ -118,9 +136,10 @@ export async function create(channelId: string, userId: string, input: CreateInp
       hasImage = pending.some((p) => p.kind === 'image');
       hasFile = pending.some((p) => p.kind !== 'image');
     }
+    slowmodeKey = await enforceSlowmode(ca,userId,reservation);
     const msg = await queryOne<{ id: string }>(
-      `INSERT INTO messages (channel_id, author_id, content, reply_to_id, embeds, mention_ids, mentions_everyone, has_link, has_image, has_file, has_gif)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) RETURNING id`,
+      `INSERT INTO messages (channel_id, author_id, content, reply_to_id, embeds, mention_ids, mentions_everyone, has_link, has_image, has_file, has_gif, client_nonce, request_hash)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13) RETURNING id`,
       [
         channelId,
         userId,
@@ -133,15 +152,18 @@ export async function create(channelId: string, userId: string, input: CreateInp
         hasImage,
         hasFile,
         embeds.length > 0,
+        input.nonce ?? null,
+        requestHash,
       ],
       db,
     );
     const id = msg!.id;
     if (attachmentIds.length) await execute(`UPDATE attachments SET message_id = $1 WHERE id = ANY($2::uuid[])`, [id, attachmentIds], db);
-    await execute(`UPDATE channels SET last_message_id = $2 WHERE id = $1`, [channelId, id], db);
+    await execute(`UPDATE channels SET last_message_id = GREATEST(last_message_id,$2::bigint) WHERE id = $1`, [channelId, id], db);
     await execute(
       `INSERT INTO read_states (user_id, channel_id, last_read_id, mention_count) VALUES ($1, $2, $3, 0)
-       ON CONFLICT (user_id, channel_id) DO UPDATE SET last_read_id = EXCLUDED.last_read_id, mention_count = 0`,
+       ON CONFLICT (user_id, channel_id) DO UPDATE SET last_read_id = GREATEST(read_states.last_read_id,EXCLUDED.last_read_id),
+         mention_count = CASE WHEN EXCLUDED.last_read_id >= read_states.last_read_id THEN 0 ELSE read_states.mention_count END`,
       [userId, channelId, id],
       db,
     );
@@ -157,13 +179,21 @@ export async function create(channelId: string, userId: string, input: CreateInp
       // Re-show a DM that the other side had closed.
       await execute(`UPDATE channel_members SET hidden = false WHERE channel_id = $1 AND hidden`, [channelId], db);
     }
-    return (await findMessageTx(id, db))!;
+    return {row:(await findMessageTx(id, db))!,created:true};
   });
+  } catch(err) {
+    if(slowmodeKey)await redis.eval(`if redis.call('GET',KEYS[1])==ARGV[1] then return redis.call('DEL',KEYS[1]) end return 0`,1,slowmodeKey,reservation)
+      .catch(cleanup=>log.warn('slowmode reservation cleanup failed',{err:cleanup}));
+    throw err;
+  }
 
-  const [dto] = await hydrate([row], userId);
+  const [dto] = await hydrate([result.row], userId);
   const payload = { ...dto!, nonce: input.nonce };
-  await emit(Ev.MessageNew, payload, targetOf(ca));
-  await fanOutNotifications(ca, userId, dto!, mentionIds, mentionsEveryone);
+  if(result.created){
+    // Delivery failures cannot turn an already committed send into an HTTP failure.
+    await emit(Ev.MessageNew, payload, targetOf(ca)).catch(err=>log.warn('message broadcast failed',{err,messageId:payload.id}));
+    await fanOutNotifications(ca, userId, dto!, mentionIds, mentionsEveryone).catch(err=>log.warn('message notifications failed',{err,messageId:payload.id}));
+  }
   return payload;
 }
 
@@ -192,7 +222,7 @@ export async function postSystem(channelId: string, actorId: string, content: st
     `INSERT INTO messages (channel_id, author_id, content, kind) VALUES ($1, $2, $3, 'system') RETURNING id`,
     [channelId, actorId, content],
   );
-  await execute(`UPDATE channels SET last_message_id = $2 WHERE id = $1`, [channelId, row!.id]);
+  await execute(`UPDATE channels SET last_message_id = GREATEST(last_message_id,$2::bigint) WHERE id = $1`, [channelId, row!.id]);
   const full = await findMessage(row!.id);
   const [dto] = await hydrate([full!], actorId);
   await emit(Ev.MessageNew, dto, targetOf(ca));

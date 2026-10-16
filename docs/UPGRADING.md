@@ -2,6 +2,10 @@
 
 Keep `.env`, uploads and database volumes. Do not use `docker compose down -v` to update an installation.
 
+## Concurrent sends, calls and notifications
+
+The latest update adds migrations `006_message_nonce.sql` (durable retry keys) and `007_notification_revision.sql` (notification revisions). Backend startup applies both automatically. Existing accounts, messages, attachments and sessions are retained. Deploy frontend/backend together and stop old backend replicas, which do not advance notification revisions. The new frontend also identifies each ringing call so stale tab actions cannot cancel a newer call. Results: [concurrency verification](VERIFICATION-CONCURRENCY-2026-10-16.md).
+
 ## PostgreSQL image and collation
 
 Set `POSTGRES_IMAGE` to the image family that originally created the database volume. New installations use `postgres:16-bookworm`. An existing Alpine installation must explicitly retain `POSTGRES_IMAGE=postgres:16-alpine` until a planned migration. Compose refuses to guess when this variable is missing. The installer can preserve the image from the existing labelled PostgreSQL container.

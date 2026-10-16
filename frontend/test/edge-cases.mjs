@@ -19,7 +19,7 @@ async function login(page,email){await page.goto(`${BASE}/login`);await page.get
 async function step(name,fn){if(process.env.EDGE_CASE&&!name.includes(process.env.EDGE_CASE))return;try{await fn();result.checks.push(name);console.log('PASS',name);}catch(e){result.failures.push({name,error:e.message});console.log('FAIL',name,e.message.split('\n')[0]);await page.screenshot({path:`${OUT}/failure-${result.failures.length}.png`}).catch(()=>undefined);}finally{await page.keyboard.press('Escape').catch(()=>undefined);await page.unrouteAll({behavior:'wait'});}}
 let alice;
 try{
- alice=await login(page,'alice@concord.local');await page.getByRole('button',{name:'Demo Server',exact:true}).click();await page.getByRole('textbox',{name:'Написать в #general'}).waitFor();
+ alice=await login(page,'alice@concord.local');await page.locator('.rail-btn[aria-label="Demo Server"]').click();await page.getByRole('textbox',{name:'Написать в #general'}).waitFor();
  const [,,serverId,channelId]=new URL(page.url()).pathname.split('/');
  const sample=await request(context,alice.accessToken,'POST',`/channels/${channelId}/messages`,{content:`edge bookmark ${run}`});
  await request(context,alice.accessToken,'PUT',`/messages/${sample.id}/bookmark`);
@@ -34,11 +34,30 @@ try{
   await bookmarks();const row=page.locator('.modal .pcard-section',{hasText:sample.content});await row.getByRole('button',{name:'Убрать',exact:true}).click();await page.getByText('Simulated bookmark removal failure',{exact:true}).waitFor();assert.equal(await row.count(),1);assert.equal(await row.getByRole('button',{name:'Убрать',exact:true}).isEnabled(),true);
   await page.unroute(`**/api/messages/${sample.id}/bookmark`);await row.getByRole('button',{name:'Убрать',exact:true}).click();await row.waitFor({state:'detached'});
  });
- await page.getByRole('button',{name:'Demo Server',exact:true}).click();await page.getByRole('textbox',{name:'Написать в #general'}).waitFor();
+ await page.locator('.rail-btn[aria-label="Demo Server"]').click();await page.getByRole('textbox',{name:'Написать в #general'}).waitFor();
  await step('rapid sends queue in order while the first response is delayed',async()=>{
   let release,received,count=0;const gate=new Promise(r=>release=r),waiting=new Promise(r=>received=r);
   await page.route(`**/api/channels/${channelId}/messages`,async route=>{if(route.request().method()!=='POST')return route.continue();if(++count===1){received();await gate;}await route.continue();});
   try{const input=page.getByRole('textbox',{name:'Написать в #general'});await input.fill(`queued first ${run}`);await input.press('Enter');await waiting;await input.fill(`queued second ${run}`);await input.press('Enter');assert.equal(await input.inputValue(),'');assert.equal(count,1);release();await page.locator('.messages .msg-content',{hasText:`queued second ${run}`}).waitFor();const messages=await request(context,alice.accessToken,'GET',`/channels/${channelId}/messages`);assert.ok(BigInt(messages.find(m=>m.content===`queued first ${run}`).id)<BigInt(messages.find(m=>m.content===`queued second ${run}`).id));}finally{release();}
+ });
+ await step('lost send response retries one attachment message with its original reply',async()=>{
+  await page.locator('.rail-btn[aria-label="Demo Server"]').click();const input=page.getByRole('textbox',{name:'Написать в #general'});await input.waitFor();
+  const row=page.locator(`.messages .msg[data-message-id="${sample.id}"]`);await row.click({button:'right'});await page.getByRole('menuitem',{name:'Ответить',exact:true}).click();
+  await page.locator('.composer-wrap input[type=file]').setInputFiles('test/fixtures/avatar.png');await page.locator('.upload .muted').waitFor();
+  const content=`lost response ${run}`,sent=[];let lost;
+  const completed=new Promise(r=>lost=r);
+  await page.route(`**/api/channels/${channelId}/messages`,async route=>{
+   if(route.request().method()!=='POST')return route.continue();sent.push(route.request().postDataJSON());
+   if(sent.length===1){const res=await route.fetch();assert.equal(res.status(),201);await route.abort('failed');lost();return;}
+   await route.continue();
+  });
+  await input.fill(content);await input.press('Enter');await completed;
+  await page.waitForFunction(text=>document.querySelector('.composer-wrap textarea')?.value===text,content);
+  assert.equal(await page.locator('.upload').count(),1);assert.equal(await page.getByRole('button',{name:'Отменить ответ',exact:true}).count(),1);
+  await input.press('Enter');await page.locator('.upload').waitFor({state:'detached'});
+  assert.equal(sent.length,2);assert.equal(sent[0].nonce,sent[1].nonce);assert.equal(sent[1].replyToId,sample.id);
+  const history=await request(context,alice.accessToken,'GET',`/channels/${channelId}/messages`),matches=history.filter(m=>m.content===content);
+  assert.equal(matches.length,1);assert.equal(matches[0].attachments.length,1);assert.equal(matches[0].replyTo.id,sample.id);
  });
  await step('search pagination retains the current page while loading the next',async()=>{
   let release,received;const gate=new Promise(r=>release=r),waiting=new Promise(r=>received=r);
@@ -78,17 +97,31 @@ try{
    await request(context,alice.accessToken,'DELETE','/notifications');await item.waitFor({state:'detached'});
   }finally{await tab.close();await other.clearCookies();}
  });
+ await step('failed voice connection does not ring the DM recipient',async()=>{
+  const login=await other.request.post(`${BASE}/api/auth/login`,{headers:{'X-Requested-With':'concord'},data:{email:'bob@concord.local',password:'demo12345'}});assert.ok(login.ok());const bob=await login.json();
+  const dm=await request(context,alice.accessToken,'POST','/dm',{recipientId:bob.user.id});let rings=0;
+  page.on('websocket',socket=>socket.on('framesent',frame=>{try{if(JSON.parse(frame.payload).op==='call:ring')rings++;}catch{}}));
+  // Reconnect the page so the frame listener observes its gateway from creation.
+  await page.goto(`${BASE}/channels/@me/${dm.id}`);await page.getByRole('button',{name:'Голосовой звонок',exact:true}).waitFor();
+  await page.route(`**/api/voice/${dm.id}/token`,r=>r.fulfill({status:503,json:{error:{code:'VOICE_UNAVAILABLE',message:'Simulated failed voice join'}}}));
+  await page.getByRole('button',{name:'Голосовой звонок',exact:true}).click();await page.getByText('Simulated failed voice join',{exact:true}).waitFor();
+  await page.evaluate(()=>new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r))));assert.equal(rings,0);
+  assert.equal(await page.locator('.vpanel').count(),0);await other.clearCookies();
+ });
  await step('revoking voice sources releases captures, restoring SPEAK republishes, CONNECT removal disconnects',async()=>{
   const bobPage=await other.newPage();bobPage.on('pageerror',e=>result.errors.push(e.message));const bob=await login(bobPage,'bob@concord.local');
   const full=await request(context,alice.accessToken,'POST','/servers',{name:`Edge voice ${run}`});servers.push(full.server.id);
   const invite=await request(context,alice.accessToken,'POST',`/servers/${full.server.id}/invites`,{});await request(other,bob.accessToken,'POST',`/invites/${invite.code}`);
-  await bobPage.getByRole('button',{name:full.server.name,exact:true}).click();await bobPage.locator('.sidebar .chan',{hasText:'General'}).last().click();await bobPage.getByText('Голосовая связь подключена',{exact:true}).waitFor();await bobPage.waitForFunction(()=>window.__edgeCaptures.some(s=>s.getAudioTracks().some(t=>t.readyState==='live')));
+  await bobPage.getByRole('button',{name:full.server.name,exact:true}).click();await bobPage.locator('.sidebar .chan',{hasText:'General'}).last().click();await bobPage.getByText('Голосовая связь подключена',{exact:true}).waitFor();await bobPage.waitForFunction(()=>window.__edgeCaptures.some(s=>s.getAudioTracks().some(t=>t.readyState==='live'))).catch(err=>{throw new Error('Initial microphone capture: '+err.message);});
   const role=full.roles.find(r=>r.isDefault),connect=1n<<16n,speak=1n<<17n;
   await request(context,alice.accessToken,'PATCH',`/servers/${full.server.id}/roles/${role.id}`,{permissions:connect.toString()});
-  await bobPage.waitForFunction(()=>window.__edgeCaptures.every(s=>s.getTracks().every(t=>t.readyState==='ended')),null,{timeout:5000});
+  await bobPage.waitForFunction(()=>window.__edgeCaptures.every(s=>s.getTracks().every(t=>t.readyState==='ended')),null,{timeout:5000}).catch(err=>{throw new Error('Release microphone on SPEAK revoke: '+err.message);});
   const captured=await bobPage.evaluate(()=>window.__edgeCaptures.length);
   await request(context,alice.accessToken,'PATCH',`/servers/${full.server.id}/roles/${role.id}`,{permissions:(connect|speak).toString()});
-  await bobPage.waitForFunction(n=>window.__edgeCaptures.length>n&&window.__edgeCaptures.at(-1).getAudioTracks().some(t=>t.readyState==='live'),captured);
+  await bobPage.waitForFunction(n=>window.__edgeCaptures.length>n&&window.__edgeCaptures.at(-1).getAudioTracks().some(t=>t.readyState==='live'),captured).catch(async err=>{
+   const state=await bobPage.evaluate(()=>{const engine=window.__concordTestVoice;return {captures:window.__edgeCaptures.map(s=>s.getTracks().map(t=>t.readyState)),...(engine?{starting:!!engine.micStarting,publication:engine.micPub?.track?.mediaStreamTrack.readyState,permissions:engine.currentRoom?.localParticipant.permissions}:{}),voice:window.__concordTestVoiceStore?.get()?.status};});
+   throw new Error('Republish microphone on SPEAK restore: '+err.message+' '+JSON.stringify(state));
+  });
   await request(context,alice.accessToken,'PATCH',`/servers/${full.server.id}/roles/${role.id}`,{permissions:'0'});await bobPage.locator('.vpanel').waitFor({state:'detached'});await bobPage.waitForFunction(()=>window.__edgeCaptures.every(s=>s.getTracks().every(t=>t.readyState==='ended'))&&window.__edgeAudio.every(c=>c.state!=='running'));await bobPage.close();
  });
  assert.deepEqual(result.failures,[]);assert.deepEqual(result.errors,[]);

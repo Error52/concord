@@ -1,0 +1,21 @@
+{
+  "micMaxDb": -7,
+  "vadOpened": true,
+  "stats": {
+    "rttMs": 1,
+    "jitterMs": 10,
+    "audioBufferMs": null,
+    "videoBufferMs": null,
+    "packetLossPct": 0,
+    "uploadKbps": 26.120125249088712,
+    "downloadKbps": 26.120125249088712,
+    "audioBitrateKbps": 26.120125249088712,
+    "codec": "Opus",
+    "transport": "UDP · host",
+    "iceState": "connected",
+    "dtlsState": "connected",
+    "quality": "excellent",
+    "updatedAt": 1792153506492
+  }
+}
+webrtc harness: OK

@@ -85,7 +85,7 @@ export const messageCreate = z.object({
   replyToId: snowflake.nullable().optional(),
   attachmentIds: z.array(uuid).max(10).optional(),
   gif: gifEmbed.nullable().optional(),
-  nonce: z.string().max(64).optional(),
+  nonce: z.string().min(1).max(64).optional(),
 });
 export const messageEdit = z.object({ content: z.string().min(1).max(4000) });
 

@@ -203,19 +203,19 @@ class VoiceEngine {
     return this.room;
   }
 
-  async join(channelId: string): Promise<void> {
+  async join(channelId: string): Promise<boolean> {
     const seq = ++this.joinSeq;
     if (this.room) await this.disconnect(false, true);
-    if (seq !== this.joinSeq) return;
+    if (seq !== this.joinSeq) return false;
     const ch = getState().channels[channelId];
     const prev = voiceStore.get();
     voiceStore.set({ ...initial, selfMute: prev.selfMute, selfDeaf: prev.selfDeaf, status: 'connecting', channelId, serverId: ch?.serverId ?? null, isDm: ch?.type === 'dm', version: prev.version + 1 });
     this.intentionalLeave = false;
     try {
       const grant = await api.post<{ token: string; url: string; serverMute: boolean; serverDeaf: boolean }>(`/voice/${channelId}/token`);
-      if (seq !== this.joinSeq) return;
+      if (seq !== this.joinSeq) return false;
       await this.ensureAudioContext();
-      if (seq !== this.joinSeq) return;
+      if (seq !== this.joinSeq) return false;
       const settings = settingsStore.get();
       const room = new Room({
         // Video keeps playing in background tabs, otherwise picture-in-picture freezes when you switch tabs.
@@ -240,24 +240,26 @@ class VoiceEngine {
       await room.connect(resolveUrl(grant.url), grant.token, { autoSubscribe: false });
       if (seq !== this.joinSeq) {
         await room.disconnect();
-        return;
+        return false;
       }
       voiceStore.set({ status: 'connected', joinedAt: Date.now(), serverMute: grant.serverMute, serverDeaf: grant.serverDeaf });
       log.info('voice connected', { room: room.name });
       for (const p of room.remoteParticipants.values()) this.onParticipant(p);
       await this.startMicrophone();
-      if (seq !== this.joinSeq || this.room !== room) return;
+      if (seq !== this.joinSeq || this.room !== room) return false;
       this.announce();
       this.startStats();
       this.refreshParticipants();
       joinSound();
       this.rejoinAttempts = 0;
+      return true;
     } catch (err) {
-      if (seq !== this.joinSeq) return;
+      if (seq !== this.joinSeq) return false;
       log.warn('voice join failed', { err: String(err) });
       await this.teardown();
       voiceStore.set({ ...initial, selfMute: voiceStore.get().selfMute, selfDeaf: voiceStore.get().selfDeaf });
       toast(errorMessage(err, 'Не удалось подключиться к голосовому каналу'), 'error');
+      return false;
     }
   }
 
@@ -690,12 +692,22 @@ class VoiceEngine {
   }
 
   private async startMicrophone(): Promise<void> {
-    if (!this.room || this.micPub) return;
+    const room=this.room;
+    if (!room || this.micPub?.track?.mediaStreamTrack.readyState==='live') return;
+    this.micPub=null;
     if (!this.mayPublish(Track.Source.Microphone)) return;
     if (this.micStarting) return this.micStarting;
+    const expectedSeq=this.micSeq+1;
     const pending = this.publishMicrophone();
     this.micStarting = pending;
-    try { await pending; } finally { if (this.micStarting === pending) this.micStarting = null; }
+    try { await pending; } finally {
+      if(this.micStarting===pending){
+        this.micStarting=null;
+        // Permission restoration may arrive while the cancelled capture is still settling.
+        const v=voiceStore.get();
+        if(this.room===room&&this.micSeq!==expectedSeq&&!this.micPub&&!v.serverMute&&!v.serverDeaf&&this.mayPublish(Track.Source.Microphone))void this.startMicrophone();
+      }
+    }
   }
 
   private async publishMicrophone(): Promise<void> {
@@ -709,12 +721,15 @@ class VoiceEngine {
       voiceStore.set({ selfMute: true });
       return;
     }
-    const track = this.dest!.stream.getAudioTracks()[0]!;
+    const seq=this.micSeq,track = this.dest?.stream.getAudioTracks()[0];
+    if(!track||track.readyState!=='live')return;
     this.applyGate();
     if (voiceStore.get().serverMute || voiceStore.get().serverDeaf || !this.mayPublish(Track.Source.Microphone)) { this.releaseMicrophone(); return; }
     try {
       const publication = await room.localParticipant.publishTrack(track, { ...VOICE_AUDIO_PUBLISH, source: Track.Source.Microphone, name: 'microphone' });
-      if (this.room !== room) { await room.localParticipant.unpublishTrack(publication.track!).catch(() => undefined); return; }
+      if (this.room !== room||this.micSeq!==seq||track.readyState!=='live'||!this.mayPublish(Track.Source.Microphone)) {
+        if(publication.track)await room.localParticipant.unpublishTrack(publication.track).catch(() => undefined);return;
+      }
       this.micPub = publication;
       if (voiceStore.get().selfMute) await this.micPub.mute();
     } catch (err) {
@@ -731,6 +746,7 @@ class VoiceEngine {
 
   private releaseMicrophone():void {
     ++this.micSeq;
+    this.micPub=null;
     this.stopMeter?.();this.stopMeter=null;
     this.micStream?.getTracks().forEach(t=>t.stop());this.micStream=null;
     this.micSource?.disconnect();this.micSource=null;

@@ -6,6 +6,7 @@ import { displayName, sendMessage, sendTyping } from '../../state/actions';
 import { toast, uiStore, useUi } from '../../state/ui';
 import { can, Perm } from '../../utils/permissions';
 import { formatBytes } from '../../utils/format';
+import {newMessageNonce} from '../../utils/ids';
 import { Avatar } from '../ui/Avatar';
 import { ComposerPicker, type PickerTab } from './Pickers';
 import type { Attachment, Gif, User } from '../../types';
@@ -46,6 +47,7 @@ export const Composer = forwardRef<ComposerHandle, Props>(function Composer({ ch
   const [sending,setSending]=useState(false);
   const sendingRef=useRef(0);
   const sendChain=useRef<Promise<unknown>>(Promise.resolve());
+  const failedSend=useRef<{key:string;nonce:string}|null>(null);
   const reservedUploads=useRef(new Set<string>());
   const active=useRef(false);
   const resources=useRef(new Map<string,Upload>());
@@ -183,11 +185,14 @@ export const Composer = forwardRef<ComposerHandle, Props>(function Composer({ ch
       attachmentIds,
       gif: gif ? { url: gif.url, previewUrl: gif.previewUrl, width: gif.width, height: gif.height, title: gif.title } : null,
     };
-    const pendingSend=sendChain.current.then(()=>getState().me?.id===accountId?sendMessage(channelId,payload):false);
+    const requestKey=JSON.stringify([draftKey,payload]);
+    const nonce=failedSend.current?.key===requestKey?failedSend.current.nonce:newMessageNonce();
+    const pendingSend=sendChain.current.then(()=>getState().me?.id===accountId?sendMessage(channelId,{...payload,nonce}):false);
     sendChain.current=pendingSend.catch(()=>false);
     const ok=await pendingSend;
+    failedSend.current=ok?null:{key:requestKey,nonce};
     --sendingRef.current;keys.forEach(key=>reservedUploads.current.delete(key));
-    if(!active.current){if(!ok&&original&&!drafts.get(draftKey))drafts.set(draftKey,original);return;}
+    if(!active.current||getState().me?.id!==accountId){if(getState().me?.id===accountId&&!ok&&original&&!drafts.get(draftKey))drafts.set(draftKey,original);return;}
     setSending(sendingRef.current>0);
     if(!ok){if(original)setText(current=>current||original);return;}
     for(const key of keys)releaseUpload(key);

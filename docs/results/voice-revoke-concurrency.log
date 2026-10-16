@@ -1,0 +1,9 @@
+PASS revoking voice sources releases captures, restoring SPEAK republishes, CONNECT removal disconnects
+{
+  "browser": "155.0.8059.80",
+  "checks": [
+    "revoking voice sources releases captures, restoring SPEAK republishes, CONNECT removal disconnects"
+  ],
+  "failures": [],
+  "errors": []
+}

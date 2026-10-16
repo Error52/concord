@@ -8,6 +8,7 @@ import { notify } from './notificationService.js';
 import { postSystem } from './messageService.js';
 import { statesForChannels } from './voiceService.js';
 import { queryOne } from '../db/pool.js';
+import {randomUUID} from 'node:crypto';
 
 /**
  * DM call signalling. Media goes through the SFU room of the DM channel; this only rings the
@@ -18,6 +19,7 @@ const RING_TTL = 45;
 const ringKey = (c: string): string => `call:ring:${c}`;
 
 interface Ring {
+  id: string;
   callerId: string;
   video: boolean;
   startedAt: string;
@@ -38,54 +40,63 @@ async function isBlocked(userId:string,peers:string[]):Promise<boolean>{
 export async function ring(channelId: string, userId: string, video: boolean): Promise<void> {
   const peers = await dmPeers(channelId, userId);
   if(await isBlocked(userId,peers))throw Errors.forbidden('Звонок недоступен');
-  const ring: Ring = { callerId: userId, video, startedAt: new Date().toISOString() };
-  await redis.set(ringKey(channelId), JSON.stringify(ring), 'EX', RING_TTL);
+  const ring: Ring = { id:randomUUID(), callerId: userId, video, startedAt: new Date().toISOString() };
+  if(await redis.set(ringKey(channelId), JSON.stringify(ring), 'EX', RING_TTL, 'NX')!=='OK')return;
   const caller = await loadPublicUser(userId);
   const others = peers.filter((p) => p !== userId);
-  await emit(Ev.CallIncoming, { channelId, caller, video, timeoutSec: RING_TTL }, { users: others });
+  await emit(Ev.CallIncoming, { id:ring.id, channelId, caller, video, timeoutSec: RING_TTL }, { users: others });
   await notify(others, 'call', { channelId, caller, video });
 }
 
-export async function accept(channelId: string, userId: string): Promise<void> {
-  const peers = await dmPeers(channelId, userId);
-  if(await isBlocked(userId,peers))throw Errors.forbidden('Звонок недоступен');
-  await redis.del(ringKey(channelId));
-  await emit(Ev.CallAccepted, { channelId, userId }, { users: peers });
+/** Compare and consume in one Redis operation; another tab may already have answered. */
+async function consumeRing(channelId:string,userId:string,ringId?:string,calleeOnly=false):Promise<Ring|null>{
+  const raw=await redis.eval(`local raw=redis.call('GET',KEYS[1]);if not raw then return nil end
+    local ring=cjson.decode(raw)
+    if ARGV[1]~='' and ring.id~=ARGV[1] then return nil end
+    if ARGV[2]=='1' and ring.callerId==ARGV[3] then return nil end
+    redis.call('DEL',KEYS[1]);return raw`,1,ringKey(channelId),ringId??'',calleeOnly?'1':'0',userId) as string|null;
+  return raw?JSON.parse(raw) as Ring:null;
 }
 
-export async function decline(channelId: string, userId: string): Promise<void> {
+export async function accept(channelId: string, userId: string,ringId?:string): Promise<void> {
   const peers = await dmPeers(channelId, userId);
-  const raw = await redis.get(ringKey(channelId));
-  await redis.del(ringKey(channelId));
-  await emit(Ev.CallDeclined, { channelId, userId }, { users: peers });
-  if (raw) {
-    const r = JSON.parse(raw) as Ring;
-    await postSystem(channelId, r.callerId, 'call:missed');
-  }
+  if(await isBlocked(userId,peers))throw Errors.forbidden('Звонок недоступен');
+  const ring=await consumeRing(channelId,userId,ringId,true);if(!ring)return;
+  await emit(Ev.CallAccepted, { channelId, userId,ringId:ring.id }, { users: peers });
+}
+
+export async function decline(channelId: string, userId: string,ringId?:string): Promise<void> {
+  const peers = await dmPeers(channelId, userId);
+  const ring=await consumeRing(channelId,userId,ringId,true);if(!ring)return;
+  await emit(Ev.CallDeclined, { channelId, userId,ringId:ring.id }, { users: peers });
+  await postSystem(channelId, ring.callerId, 'call:missed');
 }
 
 /** Ends ringing and, if nobody remains in the room, records the call in the chat. */
 export async function end(channelId: string, userId: string, durationSec: number | null): Promise<void> {
   const peers = await dmPeers(channelId, userId);
-  const raw = await redis.get(ringKey(channelId));
-  await redis.del(ringKey(channelId));
+  // An old participant leaving must not cancel a new call started by the other side.
+  const raw=await redis.get(ringKey(channelId));
+  const pending=raw?JSON.parse(raw) as Ring:null;
+  const ring=pending?.callerId===userId?await consumeRing(channelId,userId,pending.id):null;
   const remaining = (await statesForChannels([channelId])).filter((s) => s.userId !== userId);
-  await emit(Ev.CallEnded, { channelId, userId, remaining: remaining.length }, { users: peers });
+  await emit(Ev.CallEnded, { channelId, userId, ringId:ring?.id, remaining: remaining.length }, { users: peers });
   if (remaining.length === 0) {
-    if (raw) await postSystem(channelId, userId, 'call:missed');
+    if (ring) await postSystem(channelId, userId, 'call:missed');
     else if (durationSec && durationSec > 0) await postSystem(channelId, userId, `call:ended:${Math.round(durationSec)}`);
   }
 }
 
 export async function pendingRings(userId: string, channelIds: string[]) {
-  const out: { channelId: string; caller: unknown; video: boolean }[] = [];
+  const out: { id:string;channelId: string; caller: unknown; video: boolean;timeoutSec:number }[] = [];
   for (const channelId of channelIds) {
     const raw = await redis.get(ringKey(channelId));
     if (!raw) continue;
     const r = JSON.parse(raw) as Ring;
     if (r.callerId === userId) continue;
     if(await isBlocked(userId,[r.callerId]))continue;
-    out.push({ channelId, caller: await loadPublicUser(r.callerId), video: r.video });
+    const ttl=await redis.ttl(ringKey(channelId));if(ttl<=0)continue;
+    out.push({ id:r.id,channelId, caller: await loadPublicUser(r.callerId), video: r.video,timeoutSec:ttl });
   }
   return out;
 }

@@ -1,5 +1,5 @@
 import { randomBytes } from 'node:crypto';
-import { execute, query, queryOne, tx } from '../db/pool.js';
+import { execute, query, queryOne, tx, type Queryable } from '../db/pool.js';
 import { Errors, AppError } from '../http/errors.js';
 import { ADMIN_PERMS, DEFAULT_MEMBER_PERMS, MODERATOR_PERMS, Perm, has } from '../models/permissions.js';
 import * as repo from '../repositories/serverRepo.js';
@@ -113,8 +113,19 @@ export async function remove(serverId: string, userId: string): Promise<void> {
 }
 
 async function removeMember(serverId: string, targetId: string, reason: 'leave' | 'kick' | 'ban'): Promise<void> {
+  const removed=await tx(async db=>{
+    await lockMembership(db,serverId,targetId);
+    return execute(`DELETE FROM server_members WHERE server_id=$1 AND user_id=$2`,[serverId,targetId],db);
+  });
+  if(removed)await finishRemoveMember(serverId,targetId,reason);
+}
+
+async function lockMembership(db:Queryable,serverId:string,userId:string):Promise<void>{
+  await execute(`SELECT pg_advisory_xact_lock(hashtextextended($1,0))`,[`membership:${serverId}:${userId}`],db);
+}
+
+async function finishRemoveMember(serverId:string,targetId:string,reason:'leave'|'kick'|'ban'):Promise<void>{
   await forceDisconnectUser(targetId, serverId).catch(() => undefined);
-  await execute(`DELETE FROM server_members WHERE server_id = $1 AND user_id = $2`, [serverId, targetId]);
   await emit(Ev.MemberLeave, { serverId, userId: targetId, reason }, { server: serverId });
   await emit(Ev.ServerRemoved, { id: serverId, reason }, { users: [targetId] });
   await control({ kind: 'unsubscribe', userId: targetId, serverId });
@@ -128,12 +139,17 @@ export async function leave(serverId: string, userId: string): Promise<void> {
 
 /** Adds a user as a member (invite/discovery). Banned users are refused. */
 async function join(serverId: string, userId: string) {
-  const banned = await queryOne(`SELECT 1 FROM bans WHERE server_id = $1 AND user_id = $2`, [serverId, userId]);
+  const inserted=await tx(async db=>{
+  await lockMembership(db,serverId,userId);
+  const banned = await queryOne(`SELECT 1 FROM bans WHERE server_id = $1 AND user_id = $2`, [serverId, userId],db);
   if (banned) throw Errors.forbidden('Вы заблокированы на этом сервере');
   const inserted = await execute(
     `INSERT INTO server_members (server_id, user_id) VALUES ($1, $2) ON CONFLICT DO NOTHING`,
     [serverId, userId],
+    db,
   );
+  return inserted;
+  });
   return finishJoin(serverId, userId, inserted > 0);
 }
 
@@ -142,7 +158,7 @@ async function finishJoin(serverId: string, userId: string, inserted: boolean) {
   if (inserted) {
     await control({ kind: 'subscribe', userId, serverId });
     const [member] = await repo.loadMembers(serverId, [userId]);
-    await emit(Ev.MemberJoin, member, { server: serverId });
+    if(member)await emit(Ev.MemberJoin, member, { server: serverId });
     const first = await queryOne<{ id: string }>(
       `SELECT id FROM channels WHERE server_id = $1 AND type = 'text' ORDER BY position, created_at LIMIT 1`,
       [serverId],
@@ -156,15 +172,15 @@ async function finishJoin(serverId: string, userId: string, inserted: boolean) {
 
 // ─────────────── hierarchy helpers ───────────────
 
-async function targetTop(serverId: string, targetId: string): Promise<{ top: number; isOwner: boolean }> {
-  const t = await getAccess(serverId, targetId);
+async function targetTop(serverId: string, targetId: string,db?:Queryable): Promise<{ top: number; isOwner: boolean }> {
+  const t = await getAccess(serverId, targetId,db);
   if (!t) throw Errors.notFound('Участник');
   return { top: t.topPosition, isOwner: t.isOwner };
 }
 
-async function assertAbove(actor: MemberAccess, serverId: string, targetId: string, actorId: string): Promise<void> {
+async function assertAbove(actor: MemberAccess, serverId: string, targetId: string, actorId: string,db?:Queryable): Promise<void> {
   if (actorId === targetId) throw Errors.badRequest('Нельзя применить это действие к себе');
-  const t = await targetTop(serverId, targetId);
+  const t = await targetTop(serverId, targetId,db);
   if (t.isOwner) throw Errors.forbidden('Нельзя модерировать владельца сервера');
   if (!actor.isOwner && actor.topPosition <= t.top) throw Errors.forbidden('Роль участника выше или равна вашей');
 }
@@ -180,20 +196,25 @@ export async function kick(serverId: string, actorId: string, targetId: string, 
 
 export async function ban(serverId: string, actorId: string, targetId: string, reason?: string): Promise<void> {
   const actor = await requirePerm(serverId, actorId, Perm.BAN_MEMBERS);
-  const isMember = await getAccess(serverId, targetId);
-  if (isMember) await assertAbove(actor, serverId, targetId, actorId);
-  else if (!(await loadPublicUser(targetId))) throw Errors.notFound('Пользователь');
+  const removed=await tx(async db=>{
+  await lockMembership(db,serverId,targetId);
+  const isMember = await getAccess(serverId, targetId,db);
+  if (isMember) await assertAbove(actor, serverId, targetId, actorId,db);
+  else if (!(await queryOne(`SELECT 1 FROM users WHERE id=$1`,[targetId],db))) throw Errors.notFound('Пользователь');
   await execute(
     `INSERT INTO bans (server_id, user_id, reason, banned_by) VALUES ($1, $2, $3, $4) ON CONFLICT (server_id, user_id) DO UPDATE SET reason = EXCLUDED.reason`,
     [serverId, targetId, reason ?? null, actorId],
+    db,
   );
-  if (isMember) await removeMember(serverId, targetId, 'ban');
+  return execute(`DELETE FROM server_members WHERE server_id=$1 AND user_id=$2`,[serverId,targetId],db);
+  });
+  if(removed)await finishRemoveMember(serverId,targetId,'ban');
   await audit(serverId, actorId, AuditAction.MemberBan, { type: 'user', id: targetId }, { reason });
 }
 
 export async function unban(serverId: string, actorId: string, targetId: string): Promise<void> {
   await requirePerm(serverId, actorId, Perm.BAN_MEMBERS);
-  await execute(`DELETE FROM bans WHERE server_id = $1 AND user_id = $2`, [serverId, targetId]);
+  await tx(async db=>{await lockMembership(db,serverId,targetId);await execute(`DELETE FROM bans WHERE server_id=$1 AND user_id=$2`,[serverId,targetId],db);});
   await audit(serverId, actorId, AuditAction.MemberUnban, { type: 'user', id: targetId });
 }
 
@@ -466,6 +487,7 @@ export async function acceptInvite(code: string, userId: string) {
     // Serialize redemptions of this invite; rollback also restores its use count.
     const inv = await queryOne<InviteRow>(`SELECT * FROM invites WHERE code = $1 FOR UPDATE`, [code], db);
     if (!inv) throw new AppError(404, 'INVITE_INVALID', 'Приглашение недействительно');
+    await lockMembership(db,inv.server_id,userId);
     const banned = await queryOne(`SELECT 1 FROM bans WHERE server_id = $1 AND user_id = $2`, [inv.server_id, userId], db);
     if (banned) throw Errors.forbidden('Вы заблокированы на этом сервере');
     const already = await queryOne(`SELECT 1 FROM server_members WHERE server_id = $1 AND user_id = $2`, [inv.server_id, userId], db);

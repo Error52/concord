@@ -18,10 +18,12 @@ export function IncomingCall() {
   if (!call) return null;
   const name = call.caller.displayName || call.caller.username;
   const accept = async (video: boolean) => {
-    dismissCall(call.channelId);
-    gateway.send('call:accept', { channelId: call.channelId });
+    dismissCall(call.channelId,call.id);
     navigate({ name: 'dm', channelId: call.channelId });
-    await voice.join(call.channelId);
+    if(!await voice.join(call.channelId)){
+      gateway.send('call:decline',{channelId:call.channelId,ringId:call.id});return;
+    }
+    gateway.send('call:accept', { channelId: call.channelId,ringId:call.id });
     if (video) await voice.setCamera(true);
   };
   return createPortal(
@@ -35,8 +37,8 @@ export function IncomingCall() {
         <button
           className="btn btn-danger"
           onClick={() => {
-            dismissCall(call.channelId);
-            gateway.send('call:decline', { channelId: call.channelId });
+            dismissCall(call.channelId,call.id);
+            gateway.send('call:decline', { channelId: call.channelId,ringId:call.id });
           }}
         >
           <LuPhoneOff /> Отклонить
