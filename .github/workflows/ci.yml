@@ -24,7 +24,7 @@ jobs:
       - run: bash -n scripts/setup.sh scripts/install-server.sh scripts/dev-native.sh scripts/reindex-db.sh scripts/backup.sh
       - run: sh -n deploy/start-turn.sh
       - run: docker compose --env-file .env.example config --quiet
-      - run: node --test test/deployment.test.mjs test/backup.test.mjs test/turn-startup.test.mjs
+      - run: node --test test/deployment.test.mjs test/backup.test.mjs test/turn-startup.test.mjs test/load-check.test.mjs
       - run: docker build --progress=plain -t concord-frontend-ci ./frontend
       - run: docker build --progress=plain -t concord-backend-ci ./backend
       - run: node --test test/nginx-proxy.test.mjs

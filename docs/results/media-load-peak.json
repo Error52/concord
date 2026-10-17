@@ -1,0 +1,273 @@
+{
+  "source": "synthetic 1920x1080 canvas at 60 fps + stereo 220/880 Hz tones",
+  "browser": "155.0.8059.80",
+  "node": "v24.19.0",
+  "platform": "win32",
+  "quality": "1080p60",
+  "motion": true,
+  "errors": [],
+  "micDeviceFallback": true,
+  "logicalCores": 12,
+  "firstFrameMs": 512,
+  "receiverBefore": [
+    {
+      "type": "inbound-rtp",
+      "kind": "audio",
+      "ssrc": 2464494513,
+      "codec": "audio/opus",
+      "bytes": 1046250,
+      "encodeMs": null,
+      "bufferMs": 54.41316146540027,
+      "packetsLost": 33,
+      "packets": 2916,
+      "jitterMs": 1,
+      "concealedSamples": 2151,
+      "concealmentEvents": 1,
+      "totalSamplesReceived": 2829120
+    },
+    {
+      "type": "inbound-rtp",
+      "kind": "audio",
+      "ssrc": 3831971390,
+      "codec": "audio/opus",
+      "bytes": 1385278,
+      "encodeMs": null,
+      "bufferMs": 47.560806115357884,
+      "packetsLost": 40,
+      "packets": 2880,
+      "jitterMs": 1,
+      "concealedSamples": 38239,
+      "concealmentEvents": 43,
+      "totalSamplesReceived": 2802720
+    },
+    {
+      "type": "inbound-rtp",
+      "kind": "video",
+      "ssrc": 3732326722,
+      "codec": "video/H264",
+      "bytes": 1402470,
+      "frames": 3091,
+      "width": 1920,
+      "height": 1080,
+      "fps": 54,
+      "dropped": 0,
+      "encodeMs": null,
+      "bufferMs": 49.39226302167583,
+      "packetsLost": 47,
+      "packets": 3130,
+      "jitterMs": 2
+    },
+    {
+      "type": "outbound-rtp",
+      "kind": "audio",
+      "ssrc": 705011815,
+      "codec": "audio/opus",
+      "bytes": 1086829,
+      "encodeMs": null,
+      "bufferMs": null,
+      "packets": 2934
+    }
+  ],
+  "latency": {
+    "samples": 174,
+    "invalid": 0,
+    "medianMs": 102.5,
+    "p95Ms": 105.800048828125,
+    "presentedFps": 52.051133757445946,
+    "width": 1920,
+    "height": 1080
+  },
+  "publisher": [
+    {
+      "type": "inbound-rtp",
+      "kind": "audio",
+      "ssrc": 3488728535,
+      "codec": "audio/opus",
+      "bytes": 1259195,
+      "encodeMs": null,
+      "bufferMs": 47.548217416715374,
+      "packetsLost": 40,
+      "packets": 3386,
+      "jitterMs": 11,
+      "concealedSamples": 2121,
+      "concealmentEvents": 3,
+      "totalSamplesReceived": 3302400
+    },
+    {
+      "type": "outbound-rtp",
+      "kind": "audio",
+      "ssrc": 2052235500,
+      "codec": "audio/opus",
+      "bytes": 1651272,
+      "encodeMs": null,
+      "bufferMs": null,
+      "packets": 3432
+    },
+    {
+      "type": "outbound-rtp",
+      "kind": "audio",
+      "ssrc": 2627362617,
+      "codec": "audio/opus",
+      "bytes": 1281646,
+      "encodeMs": null,
+      "bufferMs": null,
+      "packets": 3590
+    },
+    {
+      "type": "outbound-rtp",
+      "kind": "video",
+      "ssrc": 1253523180,
+      "codec": "video/H264",
+      "bytes": 1641244,
+      "frames": 3648,
+      "width": 1920,
+      "height": 1080,
+      "fps": 57,
+      "limited": "none",
+      "encodeMs": 4.347861842105263,
+      "bufferMs": null,
+      "packets": 3688
+    }
+  ],
+  "receiver": [
+    {
+      "type": "inbound-rtp",
+      "kind": "audio",
+      "ssrc": 2464494513,
+      "codec": "audio/opus",
+      "bytes": 1220348,
+      "encodeMs": null,
+      "bufferMs": 53.68405797101449,
+      "packetsLost": 39,
+      "packets": 3412,
+      "jitterMs": 1,
+      "concealedSamples": 2151,
+      "concealmentEvents": 1,
+      "totalSamplesReceived": 3311040
+    },
+    {
+      "type": "inbound-rtp",
+      "kind": "audio",
+      "ssrc": 3831971390,
+      "codec": "audio/opus",
+      "bytes": 1624336,
+      "encodeMs": null,
+      "bufferMs": 46.174814814814816,
+      "packetsLost": 45,
+      "packets": 3377,
+      "jitterMs": 1,
+      "concealedSamples": 42623,
+      "concealmentEvents": 48,
+      "totalSamplesReceived": 3284640
+    },
+    {
+      "type": "inbound-rtp",
+      "kind": "video",
+      "ssrc": 3732326722,
+      "codec": "video/H264",
+      "bytes": 1635604,
+      "frames": 3636,
+      "width": 1920,
+      "height": 1080,
+      "fps": 56,
+      "dropped": 0,
+      "encodeMs": null,
+      "bufferMs": 49.146089933993395,
+      "packetsLost": 55,
+      "packets": 3677,
+      "jitterMs": 4
+    },
+    {
+      "type": "outbound-rtp",
+      "kind": "audio",
+      "ssrc": 705011815,
+      "codec": "audio/opus",
+      "bytes": 1273228,
+      "encodeMs": null,
+      "bufferMs": null,
+      "packets": 3436
+    }
+  ],
+  "transport": [
+    {
+      "remotePort": 7882,
+      "protocol": "udp",
+      "remoteType": "host",
+      "localType": "srflx"
+    }
+  ],
+  "stereo": [
+    {
+      "low": -56.397891998291016,
+      "high": -161.95718383789062
+    },
+    {
+      "low": -149.42762756347656,
+      "high": -55.649688720703125
+    }
+  ],
+  "audioWindow": [
+    {
+      "codec": "audio/opus",
+      "packets": 496,
+      "lost": 6,
+      "jitterMs": 1,
+      "concealedSamples": 0,
+      "concealmentEvents": 0,
+      "samples": 481920
+    },
+    {
+      "codec": "audio/opus",
+      "packets": 497,
+      "lost": 5,
+      "jitterMs": 1,
+      "concealedSamples": 4384,
+      "concealmentEvents": 5,
+      "samples": 481920
+    }
+  ],
+  "cleanDisconnect": true,
+  "load": {
+    "passed": true,
+    "stopReason": null,
+    "peakOverlap": true,
+    "stages": [
+      {
+        "stage": 1,
+        "successful": 30,
+        "httpP95Ms": 156.06,
+        "ready": 1,
+        "heartbeat": {
+          "samples": 7,
+          "p50Ms": 62.71,
+          "p95Ms": 67.78,
+          "maxMs": 67.78
+        }
+      },
+      {
+        "stage": 2,
+        "successful": 120,
+        "httpP95Ms": 113.36,
+        "ready": 4,
+        "heartbeat": {
+          "samples": 28,
+          "p50Ms": 59.47,
+          "p95Ms": 74.01,
+          "maxMs": 109.1
+        }
+      },
+      {
+        "stage": 3,
+        "successful": 300,
+        "httpP95Ms": 106.69,
+        "ready": 8,
+        "heartbeat": {
+          "samples": 56,
+          "p50Ms": 60.08,
+          "p95Ms": 71.48,
+          "maxMs": 75.04
+        }
+      }
+    ]
+  }
+}

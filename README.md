@@ -405,3 +405,5 @@ cd frontend && BASE_URL=http://localhost SEEDED=1 EXPECT_VOICE=1 npm run test:e2
 - OpenTelemetry-трейсинг и метрики качества звонков на сервере.
 
 </details>
+
+Проверка очередей чата и умеренной нагрузки 17 октября: [результаты](docs/VERIFICATION-LOAD-2026-10-17.md), [инструмент](docs/LOAD-CHECK.md). Способ регистрации в этом изменении сохранён.

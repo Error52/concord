@@ -1,0 +1,14 @@
+{
+  "samples": 21,
+  "maxHostCpu": 40.33,
+  "minAvailableMiB": 1148.4,
+  "maxCpuByService": {
+    "concord-backend-1": 21.01,
+    "concord-livekit-1": 11.85,
+    "concord-postgres-1": 16.75,
+    "concord-redis-1": 2.25,
+    "concord-frontend-1": 1.38,
+    "concord-coturn-1": 1.12,
+    "concord-caddy-public-1": 7.5
+  }
+}

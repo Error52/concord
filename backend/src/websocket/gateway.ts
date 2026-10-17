@@ -35,6 +35,11 @@ export const Close = {
 
 const HEARTBEAT_INTERVAL_MS = 25_000;
 const AUTH_TIMEOUT_MS = 10_000;
+// Signalling only; voice/video travel through the SFU. Allow snapshot bursts, but
+// disconnect readers that retain megabytes of old events instead of growing memory.
+const MAX_OUTBOUND_BUFFER_BYTES = 8 * 1024 * 1024;
+const MAX_INBOUND_QUEUED_MESSAGES = 64;
+const MAX_INBOUND_QUEUED_BYTES = 256 * 1024;
 
 interface Conn {
   id: string;
@@ -46,6 +51,7 @@ interface Conn {
   seq: number;
   ready: boolean;
   pending: Dispatch[];
+  pendingBytes: number;
 }
 
 const clientOp = z.discriminatedUnion('op', [
@@ -159,19 +165,35 @@ export class Gateway {
     for (const u of msg.target.users ?? []) for (const c of this.byUser.get(u) ?? []) targets.add(c);
     if (msg.target.server) for (const c of this.byServer.get(msg.target.server) ?? []) targets.add(c);
     if (targets.size === 0) return;
-    const frame = (seq: number): string => JSON.stringify({ t: msg.t, d: msg.d, s: seq });
+    let pendingBytes:number|undefined;
     for (const c of targets) {
       if (msg.exceptUser && c.userId === msg.exceptUser) continue;
+      if(c.ws.readyState!==WebSocket.OPEN)continue;
       if(!c.ready){
-        if(c.pending.length>=512){c.ws.close(Close.ServerShutdown,'snapshot queue overflow');continue;}
-        c.pending.push(msg);continue;
+        pendingBytes??=Buffer.byteLength(JSON.stringify({t:msg.t,d:msg.d}));
+        if(c.pending.length>=512||c.pendingBytes+pendingBytes>MAX_OUTBOUND_BUFFER_BYTES){this.closeSlowClient(c);continue;}
+        c.pending.push(msg);c.pendingBytes+=pendingBytes;continue;
       }
-      if (c.ws.readyState === WebSocket.OPEN) c.ws.send(frame(++c.seq));
+      this.send(c,msg.t,msg.d);
     }
   }
 
   private send(c: Conn, t: string, d: unknown): void {
-    if (c.ws.readyState === WebSocket.OPEN) c.ws.send(JSON.stringify({ t, d, s: ++c.seq }));
+    if(c.ws.readyState!==WebSocket.OPEN)return;
+    // A single large ready snapshot may be sent from an empty buffer; subsequent
+    // events cannot keep extending an already congested transport indefinitely.
+    if(c.ws.bufferedAmount>MAX_OUTBOUND_BUFFER_BYTES){this.closeSlowClient(c);return;}
+    c.ws.send(JSON.stringify({t,d,s:++c.seq}));
+  }
+
+  private closeSlowClient(c:Conn):void{
+    c.pending=[];c.pendingBytes=0;
+    if(c.ws.readyState!==WebSocket.OPEN)return;
+    // 1013 makes the client reconnect and obtain authoritative state; never skip
+    // individual events silently. Bound cleanup if its close handshake cannot drain.
+    c.ws.close(1013,'client too slow; reconnect');
+    const timer=setTimeout(()=>c.ws.terminate(),1000);timer.unref();
+    c.ws.once('close',()=>clearTimeout(timer));
   }
 
   private subscribe(c: Conn, serverId: string): void {
@@ -191,7 +213,7 @@ export class Gateway {
   // ─────────────── connection lifecycle ───────────────
 
   private onConnection(ws: WebSocket): void {
-    const conn: Conn = { id: randomUUID(), ws, userId: null, sessionId: null, servers: new Set(), alive: true, seq: 0,ready:false,pending:[] };
+    const conn: Conn = { id: randomUUID(), ws, userId: null, sessionId: null, servers: new Set(), alive: true, seq: 0,ready:false,pending:[],pendingBytes:0 };
     this.conns.set(conn.id, conn);
     const authTimer = setTimeout(() => {
       if (!conn.ready) ws.close(Close.AuthTimeout, 'auth timeout');
@@ -203,10 +225,19 @@ export class Gateway {
     // Authentication and subsequent messages must finish in wire order. Browsers
     // send their first heartbeat as soon as they receive hello, while auth awaits DB I/O.
     let pendingMessages = Promise.resolve();
+    let queuedMessages=0,queuedBytes=0;
     ws.on('message', (raw: RawData) => {
+      if(ws.readyState!==WebSocket.OPEN)return;
+      const bytes=Array.isArray(raw)?raw.reduce((sum,part)=>sum+part.byteLength,0):raw.byteLength;
+      // maxPayload limits individual frames, not a burst waiting on auth or DB I/O.
+      if(queuedMessages>=MAX_INBOUND_QUEUED_MESSAGES || queuedBytes+bytes>MAX_INBOUND_QUEUED_BYTES){
+        this.closeSlowClient(conn);return;
+      }
+      queuedMessages++;queuedBytes+=bytes;
       pendingMessages = pendingMessages
         .then(() => ws.readyState === WebSocket.OPEN ? this.onMessage(conn, raw) : undefined)
-        .catch((err: unknown) => log.error('gateway message queue failed', { err }));
+        .catch((err: unknown) => log.error('gateway message queue failed', { err }))
+        .finally(()=>{queuedMessages--;queuedBytes-=bytes;});
     });
     ws.on('close', () => {
       clearTimeout(authTimer);
@@ -237,7 +268,7 @@ export class Gateway {
     } catch (err) {
       if(parsed.op===Op.Auth){
         log.warn('gateway snapshot failed; reconnect required',{err});
-        conn.pending=[];conn.ws.close(Close.ServerShutdown,'snapshot failed');return;
+        conn.pending=[];conn.pendingBytes=0;conn.ws.close(Close.ServerShutdown,'snapshot failed');return;
       }
       if (err instanceof AppError) {
         if (err.status === 429 && parsed.op !== Op.Heartbeat) this.send(conn, 'error', { code: err.code, message: err.message, op: parsed.op });
@@ -341,7 +372,7 @@ export class Gateway {
     for(const event of conn.pending){
       if(event.target.users?.includes(user.id)||(event.target.server&&conn.servers.has(event.target.server)))this.send(conn,event.t,event.d);
     }
-    conn.pending=[];
+    conn.pending=[];conn.pendingBytes=0;
   }
 
   private async buildReady(userId: string, serverIds: string[]) {

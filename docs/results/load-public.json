@@ -1,0 +1,357 @@
+{
+  "kind": "bounded-http-gateway",
+  "target": "https://31-59-168-25.sslip.io:8443",
+  "startedAt": "2026-10-17T17:52:13.370Z",
+  "accounts": 2,
+  "limits": {
+    "maxHttpRequests": 1000,
+    "maxSockets": 8,
+    "maxSocketsPerAccount": 4,
+    "maxHttpRate": 20,
+    "maxHttpConcurrency": 8,
+    "responseBytes": 2097152,
+    "totalHttpBytes": 33554432,
+    "stageSeconds": 15
+  },
+  "scope": "GET reads, gateway auth and heartbeat only. No chat writes, email, login brute force or SFU capacity measurement.",
+  "stages": [
+    {
+      "stage": 1,
+      "offeredRate": 2,
+      "concurrency": 1,
+      "http": {
+        "issued": 30,
+        "completed": 30,
+        "successful": 30,
+        "aborted": 0,
+        "bytes": 32138,
+        "skippedBusySlots": 0,
+        "statuses": {
+          "200": 30
+        },
+        "errors": {},
+        "endpoints": {
+          "ready": {
+            "count": 6,
+            "errors": 0,
+            "latency": {
+              "samples": 6,
+              "p50Ms": 76.47,
+              "p95Ms": 156.06,
+              "maxMs": 156.06
+            }
+          },
+          "self": {
+            "count": 6,
+            "errors": 0,
+            "latency": {
+              "samples": 6,
+              "p50Ms": 89.5,
+              "p95Ms": 166.72,
+              "maxMs": 166.72
+            }
+          },
+          "servers": {
+            "count": 6,
+            "errors": 0,
+            "latency": {
+              "samples": 6,
+              "p50Ms": 82.96,
+              "p95Ms": 90.49,
+              "maxMs": 90.49
+            }
+          },
+          "notifications": {
+            "count": 4,
+            "errors": 0,
+            "latency": {
+              "samples": 4,
+              "p50Ms": 82.87,
+              "p95Ms": 86.55,
+              "maxMs": 86.55
+            }
+          },
+          "messages50": {
+            "count": 4,
+            "errors": 0,
+            "latency": {
+              "samples": 4,
+              "p50Ms": 92.24,
+              "p95Ms": 113.88,
+              "maxMs": 113.88
+            }
+          },
+          "serverSnapshot": {
+            "count": 4,
+            "errors": 0,
+            "latency": {
+              "samples": 4,
+              "p50Ms": 73.21,
+              "p95Ms": 98.84,
+              "maxMs": 98.84
+            }
+          }
+        },
+        "completedPerSecond": 2,
+        "serviceErrorPercent": 0,
+        "latency": {
+          "samples": 30,
+          "p50Ms": 86.55,
+          "p95Ms": 156.06,
+          "maxMs": 166.72
+        },
+        "successLatency": {
+          "samples": 30,
+          "p50Ms": 86.55,
+          "p95Ms": 156.06,
+          "maxMs": 166.72
+        }
+      },
+      "ws": {
+        "requested": 1,
+        "ready": 1,
+        "errors": {},
+        "connectToReady": {
+          "samples": 1,
+          "p50Ms": 321.56,
+          "p95Ms": 321.56,
+          "maxMs": 321.56
+        },
+        "heartbeatRtt": {
+          "samples": 7,
+          "p50Ms": 62.71,
+          "p95Ms": 67.78,
+          "maxMs": 67.78
+        }
+      },
+      "elapsedSeconds": 15.01
+    },
+    {
+      "stage": 2,
+      "offeredRate": 8,
+      "concurrency": 4,
+      "http": {
+        "issued": 120,
+        "completed": 120,
+        "successful": 120,
+        "aborted": 0,
+        "bytes": 152400,
+        "skippedBusySlots": 0,
+        "statuses": {
+          "200": 120
+        },
+        "errors": {},
+        "endpoints": {
+          "notifications": {
+            "count": 20,
+            "errors": 0,
+            "latency": {
+              "samples": 20,
+              "p50Ms": 84.78,
+              "p95Ms": 159.74,
+              "maxMs": 162.76
+            }
+          },
+          "messages50": {
+            "count": 20,
+            "errors": 0,
+            "latency": {
+              "samples": 20,
+              "p50Ms": 89.96,
+              "p95Ms": 107.18,
+              "maxMs": 109.23
+            }
+          },
+          "serverSnapshot": {
+            "count": 20,
+            "errors": 0,
+            "latency": {
+              "samples": 20,
+              "p50Ms": 89.59,
+              "p95Ms": 110.15,
+              "maxMs": 113.36
+            }
+          },
+          "ready": {
+            "count": 20,
+            "errors": 0,
+            "latency": {
+              "samples": 20,
+              "p50Ms": 75,
+              "p95Ms": 78.18,
+              "maxMs": 78.7
+            }
+          },
+          "self": {
+            "count": 20,
+            "errors": 0,
+            "latency": {
+              "samples": 20,
+              "p50Ms": 84.16,
+              "p95Ms": 96.36,
+              "maxMs": 97.68
+            }
+          },
+          "servers": {
+            "count": 20,
+            "errors": 0,
+            "latency": {
+              "samples": 20,
+              "p50Ms": 84.29,
+              "p95Ms": 193.62,
+              "maxMs": 317.76
+            }
+          }
+        },
+        "completedPerSecond": 7.96,
+        "serviceErrorPercent": 0,
+        "latency": {
+          "samples": 120,
+          "p50Ms": 84.46,
+          "p95Ms": 113.36,
+          "maxMs": 317.76
+        },
+        "successLatency": {
+          "samples": 120,
+          "p50Ms": 84.46,
+          "p95Ms": 113.36,
+          "maxMs": 317.76
+        }
+      },
+      "ws": {
+        "requested": 4,
+        "ready": 4,
+        "errors": {},
+        "connectToReady": {
+          "samples": 4,
+          "p50Ms": 268.99,
+          "p95Ms": 343.93,
+          "maxMs": 343.93
+        },
+        "heartbeatRtt": {
+          "samples": 28,
+          "p50Ms": 59.47,
+          "p95Ms": 74.01,
+          "maxMs": 109.1
+        }
+      },
+      "elapsedSeconds": 15.08
+    },
+    {
+      "stage": 3,
+      "offeredRate": 20,
+      "concurrency": 8,
+      "http": {
+        "issued": 300,
+        "completed": 300,
+        "successful": 300,
+        "aborted": 0,
+        "bytes": 375200,
+        "skippedBusySlots": 0,
+        "statuses": {
+          "200": 300
+        },
+        "errors": {},
+        "endpoints": {
+          "notifications": {
+            "count": 50,
+            "errors": 0,
+            "latency": {
+              "samples": 50,
+              "p50Ms": 83.08,
+              "p95Ms": 112.52,
+              "maxMs": 152.75
+            }
+          },
+          "messages50": {
+            "count": 50,
+            "errors": 0,
+            "latency": {
+              "samples": 50,
+              "p50Ms": 88.01,
+              "p95Ms": 146.68,
+              "maxMs": 210.62
+            }
+          },
+          "serverSnapshot": {
+            "count": 50,
+            "errors": 0,
+            "latency": {
+              "samples": 50,
+              "p50Ms": 85.55,
+              "p95Ms": 105.08,
+              "maxMs": 118.32
+            }
+          },
+          "ready": {
+            "count": 50,
+            "errors": 0,
+            "latency": {
+              "samples": 50,
+              "p50Ms": 72.4,
+              "p95Ms": 83.63,
+              "maxMs": 150.02
+            }
+          },
+          "self": {
+            "count": 50,
+            "errors": 0,
+            "latency": {
+              "samples": 50,
+              "p50Ms": 82.56,
+              "p95Ms": 96.06,
+              "maxMs": 108.06
+            }
+          },
+          "servers": {
+            "count": 50,
+            "errors": 0,
+            "latency": {
+              "samples": 50,
+              "p50Ms": 79.91,
+              "p95Ms": 91.96,
+              "maxMs": 172.68
+            }
+          }
+        },
+        "completedPerSecond": 19.95,
+        "serviceErrorPercent": 0,
+        "latency": {
+          "samples": 300,
+          "p50Ms": 81.77,
+          "p95Ms": 106.69,
+          "maxMs": 210.62
+        },
+        "successLatency": {
+          "samples": 300,
+          "p50Ms": 81.77,
+          "p95Ms": 106.69,
+          "maxMs": 210.62
+        }
+      },
+      "ws": {
+        "requested": 8,
+        "ready": 8,
+        "errors": {},
+        "connectToReady": {
+          "samples": 8,
+          "p50Ms": 286.7,
+          "p95Ms": 333.64,
+          "maxMs": 333.64
+        },
+        "heartbeatRtt": {
+          "samples": 56,
+          "p50Ms": 60.08,
+          "p95Ms": 71.48,
+          "maxMs": 75.04
+        }
+      },
+      "elapsedSeconds": 15.04
+    }
+  ],
+  "stopReason": null,
+  "finishedAt": "2026-10-17T17:53:00.661Z",
+  "totalHttpRequests": 450,
+  "totalHttpBytes": 559738,
+  "passed": true
+}
