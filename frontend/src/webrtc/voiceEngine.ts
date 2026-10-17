@@ -270,7 +270,7 @@ class VoiceEngine {
     if (s.isDm && s.channelId && s.joinedAt) {
       gateway.send('call:end', { channelId: s.channelId, durationSec: (Date.now() - s.joinedAt) / 1000 });
     }
-    if (s.channelId) gateway.send('voice:state', { channelId: null });
+    if (s.channelId) gateway.send('voice:state', { channelId: null,expectedChannelId:s.channelId,participantSid:this.room?.localParticipant.sid||undefined });
     await this.teardown();
     if (seq !== this.joinSeq) return;
     if (!switching) voiceStore.set({ ...initial, selfMute: s.selfMute, selfDeaf: s.selfDeaf, version: s.version + 1 });
@@ -1062,7 +1062,7 @@ class VoiceEngine {
   private announce(): void {
     const v = voiceStore.get();
     if (!v.channelId) return;
-    gateway.send('voice:state', { channelId: v.channelId, selfMute: v.selfMute, selfDeaf: v.selfDeaf, camera: v.camera, screen: v.screen });
+    gateway.send('voice:state', { channelId: v.channelId,participantSid:this.room?.localParticipant.sid||undefined, selfMute: v.selfMute, selfDeaf: v.selfDeaf, camera: v.camera, screen: v.screen });
   }
 
   private bump(): void {

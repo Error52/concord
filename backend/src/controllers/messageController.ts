@@ -89,6 +89,7 @@ export function registerMessages(r: Router): void {
     const claims = token ? verifyJwt<{ sub: string; sid: string; typ: string }>(token, config.JWT_SECRET) : null;
     if (!claims || claims.typ !== 'media' || typeof claims.sub!=='string' || typeof claims.sid!=='string'
       || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(claims.sid)) throw Errors.unauthorized();
+    if(!S.uuid.safeParse(claims.sub).success)throw Errors.unauthorized();
     // Media cookies live longer than access-token revocation cache entries. Check the durable session family.
     // Rotation keeps downloads working; logout, password reset and explicit revocation invalidate them.
     const active=await queryOne<{id:string}>(`SELECT s.id FROM sessions s JOIN users u ON u.id=s.user_id

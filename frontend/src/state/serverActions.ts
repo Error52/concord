@@ -77,28 +77,35 @@ export async function closeDm(id: string): Promise<void> {
   if(route.name==='dm'&&route.channelId===id)navigate({name:'friends'});
 }
 
-const setRelations = (list: Relation[] | null) => list && setState({ relationships: Object.fromEntries(list.map((r) => [r.id, r])) });
+let relationRequest=0;
+async function mutateRelations(fn:()=>Promise<Relation[]>,fallback:string):Promise<Relation[]|null> {
+  const request=++relationRequest,previous=getState().relationships,userId=getState().me?.id;
+  const list=await attempt(fn,fallback);
+  if(list&&request===relationRequest&&getState().relationships===previous&&getState().me?.id===userId){
+    setState({relationships:Object.fromEntries(list.map(r=>[r.id,r]))});
+  }
+  return list;
+}
 
 export async function sendFriendRequest(target: { username?: string; userId?: string }): Promise<boolean> {
-  const list = await attempt(() => api.post<Relation[]>('/friends/request', target), 'Не удалось отправить запрос');
-  setRelations(list);
+  const list = await mutateRelations(() => api.post<Relation[]>('/friends/request', target), 'Не удалось отправить запрос');
   if (list) toast('Запрос в друзья отправлен', 'success');
   return !!list;
 }
 
 export async function acceptFriend(userId: string): Promise<void> {
-  setRelations(await attempt(() => api.post<Relation[]>(`/friends/${userId}/accept`), 'Не удалось принять запрос'));
+  await mutateRelations(() => api.post<Relation[]>(`/friends/${userId}/accept`), 'Не удалось принять запрос');
 }
 
 export async function removeFriend(userId: string): Promise<void> {
-  setRelations(await attempt(() => api.del<Relation[]>(`/friends/${userId}`), 'Не удалось выполнить действие'));
+  await mutateRelations(() => api.del<Relation[]>(`/friends/${userId}`), 'Не удалось выполнить действие');
 }
 
 export async function blockUser(userId: string): Promise<void> {
   if (!confirm('Заблокировать пользователя? Он не сможет писать вам и добавлять в друзья.')) return;
-  setRelations(await attempt(() => api.put<Relation[]>(`/blocks/${userId}`), 'Не удалось заблокировать'));
+  await mutateRelations(() => api.put<Relation[]>(`/blocks/${userId}`), 'Не удалось заблокировать');
 }
 
 export async function unblockUser(userId: string): Promise<void> {
-  setRelations(await attempt(() => api.del<Relation[]>(`/blocks/${userId}`), 'Не удалось разблокировать'));
+  await mutateRelations(() => api.del<Relation[]>(`/blocks/${userId}`), 'Не удалось разблокировать');
 }

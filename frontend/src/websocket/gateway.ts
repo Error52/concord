@@ -19,6 +19,7 @@ export class Gateway {
   private handlers = new Map<string, Set<Handler>>();
   private statusListeners = new Set<(s: GatewayStatus) => void>();
   private heartbeatTimer: number | null = null;
+  private connectionTimer: number | null = null;
   private reconnectTimer: number | null = null;
   private attempts = 0;
   private stopped = true;
@@ -108,8 +109,17 @@ export class Gateway {
     const ws = new WebSocket(`${proto}://${location.host}/api/gateway`);
     this.ws = ws;
     const current = () => !this.stopped && this.generation === generation && this.ws === ws;
+    const armConnectionTimeout=(delay:number):void=>{
+      this.clearConnectionTimeout();
+      this.connectionTimer=window.setTimeout(()=>{
+        this.connectionTimer=null;
+        if(current())ws.close(4000,'Connection timeout');
+      },delay);
+    };
+    armConnectionTimeout(15_000);
     ws.onopen = () => {
       if (!current()) return;
+      armConnectionTimeout(30_000);
       const token = getAccessToken();
       if (!token) {
         ws.close(CLOSE_AUTH_FAILED);
@@ -132,6 +142,7 @@ export class Gateway {
         return;
       }
       if (msg.t === 'ready') {
+        this.clearConnectionTimeout();
         this.attempts = 0;
         this.setStatus('connected');
       }
@@ -140,6 +151,7 @@ export class Gateway {
     };
     ws.onclose = async (ev) => {
       if (!current()) return;
+      this.clearConnectionTimeout();
       this.clearHeartbeat();
       if (ev.code === CLOSE_SESSION_REVOKED) {
         this.stop();
@@ -191,7 +203,13 @@ export class Gateway {
   private clearTimers():void {
     if(this.reconnectTimer!==null)clearTimeout(this.reconnectTimer);
     this.reconnectTimer=null;
+    this.clearConnectionTimeout();
     this.clearHeartbeat();
+  }
+
+  private clearConnectionTimeout():void {
+    if(this.connectionTimer!==null)clearTimeout(this.connectionTimer);
+    this.connectionTimer=null;
   }
 
   private heartbeat(): void {

@@ -56,6 +56,8 @@ const clientOp = z.discriminatedUnion('op', [
     op: z.literal(Op.VoiceState),
     d: z.object({
       channelId: z.string().uuid().nullable(),
+      expectedChannelId:z.string().uuid().optional(),
+      participantSid:z.string().min(1).max(128).optional(),
       selfMute: z.boolean().optional(),
       selfDeaf: z.boolean().optional(),
       camera: z.boolean().optional(),
@@ -79,6 +81,8 @@ export class Gateway {
   private byServer = new Map<string, Set<Conn>>();
   private bySession = new Map<string, Set<Conn>>();
   private heartbeatTimer: NodeJS.Timeout | null = null;
+  private heartbeatWork: Promise<void> | null = null;
+  private closingConnections = new Set<Promise<void>>();
 
   constructor(server: Server) {
     this.wss = new WebSocketServer({ noServer: true, maxPayload: 64 * 1024 });
@@ -108,13 +112,20 @@ export class Gateway {
         log.error('bad bus message', { err });
       }
     });
-    this.heartbeatTimer = setInterval(() => this.sweep(), HEARTBEAT_INTERVAL_MS);
+    this.heartbeatTimer = setInterval(() => {
+      if (!this.heartbeatWork) this.heartbeatWork = this.sweep()
+        .catch(err => log.warn('gateway heartbeat failed', {err}))
+        .finally(() => {this.heartbeatWork = null;});
+    }, HEARTBEAT_INTERVAL_MS);
   }
 
   async stop(): Promise<void> {
     if (this.heartbeatTimer) clearInterval(this.heartbeatTimer);
     for (const c of this.conns.values()) c.ws.close(Close.ServerShutdown, 'restart');
     await new Promise<void>((resolve) => this.wss.close(() => resolve()));
+    await this.heartbeatWork;
+    // Socket closure precedes asynchronous presence cleanup and queued auth work.
+    while (this.closingConnections.size) await Promise.all(this.closingConnections);
   }
 
   // ─────────────── bus fan-out ───────────────
@@ -197,7 +208,9 @@ export class Gateway {
     });
     ws.on('close', () => {
       clearTimeout(authTimer);
-      void this.onClose(conn);
+      const closing = pendingMessages.then(() => this.onClose(conn));
+      this.closingConnections.add(closing);
+      void closing.finally(() => this.closingConnections.delete(closing));
     });
     ws.on('error', (err: Error) => log.debug('ws error', { err }));
     this.send(conn, 'hello', { heartbeatInterval: HEARTBEAT_INTERVAL_MS });
@@ -250,16 +263,14 @@ export class Gateway {
         await messages.typing(op.d.channelId, userId);
         break;
       case Op.VoiceState: {
-        const { channelId, ...rest } = op.d;
+        const { channelId,expectedChannelId,participantSid, ...rest } = op.d;
         if (channelId === null) {
-          await voice.markLeft(userId);
+          await voice.leaveClient(userId,expectedChannelId,participantSid);
         } else {
           const current = await voice.myState(userId);
-          if (current?.channelId !== channelId) {
-            await voice.join(userId, channelId); // permission check
-            await voice.markJoined(userId, channelId);
-          }
-          await voice.updateSelfState(userId, rest);
+          if (current?.channelId !== channelId) await voice.join(userId, channelId); // permission check
+          if(!await voice.markJoined(userId,channelId,{participantSid},true))return;
+          await voice.updateSelfState(userId, rest,channelId,participantSid);
         }
         break;
       }
@@ -292,6 +303,7 @@ export class Gateway {
       return;
     }
     const row = await users.findById(user.id);
+    if (conn.ws.readyState !== WebSocket.OPEN) return;
     if (!row) {
       conn.ws.close(Close.AuthFailed, 'invalid token');
       return;

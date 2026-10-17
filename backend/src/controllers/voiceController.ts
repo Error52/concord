@@ -10,7 +10,7 @@ import * as S from './schemas.js';
 export function registerVoice(r: Router): void {
   /** Issues a short-lived SFU token; permissions (CONNECT/SPEAK/VIDEO, server mute) are baked into the grant. */
   r.post('/voice/:channelId/token', { rateLimit: { name: 'voice-token', max: 30, windowSec: 60, by: 'user' } }, async (ctx) =>
-    voice.join(ctx.user.id, validate(S.uuid, ctx.params.channelId)),
+    voice.join(ctx.user.id, validate(S.uuid, ctx.params.channelId),ctx.user.sessionId),
   );
 
   r.get('/voice/states/:channelId', {}, async (ctx) => {

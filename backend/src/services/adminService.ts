@@ -1,4 +1,4 @@
-import { execute, query, queryOne } from '../db/pool.js';
+import { execute, query, queryOne,tx,type Queryable } from '../db/pool.js';
 import { Errors } from '../http/errors.js';
 import { config,platformAdminEmails } from '../config.js';
 import { loadPublicUsers, toBadge } from '../repositories/userRepo.js';
@@ -15,13 +15,13 @@ import type { BadgeInput } from './badgeService.js';
  * immediately (it is not baked into the access token).
  */
 
-export async function isPlatformAdmin(userId: string): Promise<boolean> {
-  const row = await queryOne<{ is_platform_admin: boolean }>(`SELECT is_platform_admin FROM users WHERE id = $1`, [userId]);
+export async function isPlatformAdmin(userId: string,db?:Queryable): Promise<boolean> {
+  const row = await queryOne<{ is_platform_admin: boolean }>(`SELECT is_platform_admin FROM users WHERE id = $1`, [userId],db);
   return !!row?.is_platform_admin;
 }
 
-export async function requirePlatformAdmin(userId: string): Promise<void> {
-  if (!(await isPlatformAdmin(userId))) throw Errors.forbidden('Только для администраторов платформы');
+export async function requirePlatformAdmin(userId: string,db?:Queryable): Promise<void> {
+  if (!(await isPlatformAdmin(userId,db))) throw Errors.forbidden('Только для администраторов платформы');
 }
 
 /** Makes every email from PLATFORM_ADMIN_EMAILS an admin (run at startup). */
@@ -31,14 +31,14 @@ export async function syncPlatformAdmins(): Promise<void> {
   if (n > 0) log.info('platform admins granted from PLATFORM_ADMIN_EMAILS', { count: n });
 }
 
-async function adminAudit(actorId: string, action: string, target: { type: string; id: string } | null, meta: Record<string, unknown> = {}): Promise<void> {
+async function adminAudit(actorId: string, action: string, target: { type: string; id: string } | null, meta: Record<string, unknown> = {},db?:Queryable): Promise<void> {
   await execute(`INSERT INTO platform_audit_log (actor_id, action, target_type, target_id, meta) VALUES ($1, $2, $3, $4, $5)`, [
     actorId,
     action,
     target?.type ?? null,
     target?.id ?? null,
     JSON.stringify(meta),
-  ]);
+  ],db);
 }
 
 // ───────────────────────────── overview ─────────────────────────────
@@ -214,19 +214,22 @@ export async function searchUsers(actorId: string, q: string): Promise<AdminUser
 }
 
 export async function setPlatformAdmin(actorId: string, targetId: string, value: boolean): Promise<void> {
-  await requirePlatformAdmin(actorId);
-  const target = await queryOne<{ email: string; is_platform_admin: boolean }>(`SELECT email, is_platform_admin FROM users WHERE id = $1`, [targetId]);
+  await tx(async db=>{
+  await execute(`SELECT pg_advisory_xact_lock(hashtextextended('platform-admins',0))`,[],db);
+  await requirePlatformAdmin(actorId,db);
+  const target = await queryOne<{ email: string; is_platform_admin: boolean }>(`SELECT email, is_platform_admin FROM users WHERE id = $1 FOR UPDATE`, [targetId],db);
   if (!target) throw Errors.notFound('Пользователь');
   if (target.is_platform_admin === value) return;
   if (!value) {
     if (platformAdminEmails.includes(target.email.toLowerCase())) {
       throw Errors.badRequest('Этот email указан в PLATFORM_ADMIN_EMAILS (.env) — уберите его оттуда, чтобы снять права');
     }
-    const admins = await queryOne<{ n: number }>(`SELECT count(*)::int AS n FROM users WHERE is_platform_admin`);
+    const admins = await queryOne<{ n: number }>(`SELECT count(*)::int AS n FROM users WHERE is_platform_admin`,[],db);
     if ((admins?.n ?? 0) <= 1) throw Errors.badRequest('Нельзя снять права с последнего администратора');
   }
-  await execute(`UPDATE users SET is_platform_admin = $2 WHERE id = $1`, [targetId, value]);
-  await adminAudit(actorId, value ? 'admin.grant' : 'admin.revoke', { type: 'user', id: targetId });
+  await execute(`UPDATE users SET is_platform_admin = $2 WHERE id = $1`, [targetId, value],db);
+  await adminAudit(actorId, value ? 'admin.grant' : 'admin.revoke', { type: 'user', id: targetId },{},db);
+  });
 }
 
 // ───────────────────────────── audit ─────────────────────────────

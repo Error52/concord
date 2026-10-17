@@ -1,0 +1,26 @@
+✔ a delayed relationship snapshot is published before a newer block snapshot (573.6328ms)
+✔ snapshot hydration can use its checked-out transaction without exhausting the PostgreSQL pool (398.009ms)
+✔ old participant_left and room_finished cannot erase a full reconnect to the same room (559.9974ms)
+{"t":"2026-10-16T17:24:03.445Z","level":"warn","msg":"livekit leave verification failed; waiting for reconciliation","err":{"name":"Error","message":"LiveKit ListParticipants failed: 503 {}","stack":"Error: LiveKit ListParticipants failed: 503 {}\n    at twirp (C:\\Users\\User\\Documents\\Codex\\2026-10-07\\new-chat\\work\\github-concord\\backend\\src\\webrtc\\livekit.ts:70:11)\n    at process.processTicksAndRejections (node:internal/process/task_queues:104:5)\n    at async listParticipants (C:\\Users\\User\\Documents\\Codex\\2026-10-07\\new-chat\\work\\github-concord\\backend\\src\\webrtc\\livekit.ts:90:17)\n    at async <anonymous> (C:\\Users\\User\\Documents\\Codex\\2026-10-07\\new-chat\\work\\github-concord\\backend\\src\\services\\voiceService.ts:378:13)\n    at async tx (C:\\Users\\User\\Documents\\Codex\\2026-10-07\\new-chat\\work\\github-concord\\backend\\src\\db\\pool.ts:41:20)\n    at async markWebhookLeft (C:\\Users\\User\\Documents\\Codex\\2026-10-07\\new-chat\\work\\github-concord\\backend\\src\\services\\voiceService.ts:365:20)\n    at async handleWebhook (C:\\Users\\User\\Documents\\Codex\\2026-10-07\\new-chat\\work\\github-concord\\backend\\src\\services\\voiceService.ts:420:21)\n    at async <anonymous> (C:\\Users\\User\\Documents\\Codex\\2026-10-07\\new-chat\\work\\github-concord\\backend\\test\\voice-audit.test.ts:78:5)\n    at async fakeSfu (C:\\Users\\User\\Documents\\Codex\\2026-10-07\\new-chat\\work\\github-concord\\backend\\test\\voice-audit.test.ts:48:7)\n    at async TestContext.<anonymous> (C:\\Users\\User\\Documents\\Codex\\2026-10-07\\new-chat\\work\\github-concord\\backend\\test\\voice-audit.test.ts:72:3)"}}
+{"t":"2026-10-16T17:24:03.460Z","level":"warn","msg":"livekit room verification failed; waiting for reconciliation","err":{"name":"Error","message":"LiveKit ListRooms failed: 503 {}","stack":"Error: LiveKit ListRooms failed: 503 {}\n    at twirp (C:\\Users\\User\\Documents\\Codex\\2026-10-07\\new-chat\\work\\github-concord\\backend\\src\\webrtc\\livekit.ts:70:11)\n    at process.processTicksAndRejections (node:internal/process/task_queues:104:5)\n    at async roomInstances (C:\\Users\\User\\Documents\\Codex\\2026-10-07\\new-chat\\work\\github-concord\\backend\\src\\webrtc\\livekit.ts:105:13)\n    at async handleWebhook (C:\\Users\\User\\Documents\\Codex\\2026-10-07\\new-chat\\work\\github-concord\\backend\\src\\services\\voiceService.ts:424:24)\n    at async <anonymous> (C:\\Users\\User\\Documents\\Codex\\2026-10-07\\new-chat\\work\\github-concord\\backend\\test\\voice-audit.test.ts:79:5)\n    at async fakeSfu (C:\\Users\\User\\Documents\\Codex\\2026-10-07\\new-chat\\work\\github-concord\\backend\\test\\voice-audit.test.ts:48:7)\n    at async TestContext.<anonymous> (C:\\Users\\User\\Documents\\Codex\\2026-10-07\\new-chat\\work\\github-concord\\backend\\test\\voice-audit.test.ts:72:3)\n    at async Test.run (node:internal/test_runner/test:1389:7)\n    at async Test.processPendingSubtests (node:internal/test_runner/test:960:7)"}}
+✔ a client reconnect announced before its webhook survives delayed departure and SFU outages (246.7748ms)
+✔ a delayed old participant_joined cannot resurrect a previously left room (318.2677ms)
+✔ two gateway devices cannot overwrite or leave the newer SFU incarnation (482.6236ms)
+✔ reconciliation retains current participant SIDs when the join webhook was missed (241.9493ms)
+✔ voice grants bind to the login family, survive rotation and disconnect on real HTTP logout (329.5775ms)
+✔ revoking an older device preserves the current participant from a different login family (337.0313ms)
+✔ revoked and foreign media sessions are rejected by webhooks/reconciliation while legacy grants remain compatible (415.7381ms)
+✔ legacy media is disconnected after the five-minute backend upgrade grace even if its SFU token was renewed (226.9193ms)
+✔ last concurrent departure records one server-timed call and duplicate end operations are silent (266.904ms)
+✔ declining or cancelling a ring records one missed call even when the caller then leaves (396.5379ms)
+✔ an unanswered caller disappearing without call:end still clears the ring and records one missed call (208.8786ms)
+✔ a call answered through the DM sidebar is never falsely recorded as missed (344.704ms)
+✔ voice moderation respects owner and role hierarchy while allowing moderator self-management (544.6975ms)
+ℹ tests 16
+ℹ suites 0
+ℹ pass 16
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 6926.7809

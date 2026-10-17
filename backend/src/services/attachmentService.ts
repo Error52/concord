@@ -3,13 +3,13 @@ import { randomUUID } from 'node:crypto';
 import { pipeline } from 'node:stream/promises';
 import sharp from 'sharp';
 import { config } from '../config.js';
-import { execute, query, queryOne } from '../db/pool.js';
+import { execute, query, queryOne, tx } from '../db/pool.js';
 import { Errors } from '../http/errors.js';
 import { Perm } from '../models/permissions.js';
 import { storage } from '../storage/index.js';
 import { assertPerm, canManage, requireChannel } from './permissionService.js';
 import { assertExtensionMatches, readBody, sanitizeFilename, sniff } from './mediaService.js';
-import { findMessage, hydrate, toAttachment } from '../repositories/messageRepo.js';
+import { findMessage, hydrate, toAttachment, MESSAGE_COLUMNS, type MessageRow } from '../repositories/messageRepo.js';
 import { emit } from '../websocket/bus.js';
 import { Ev } from '../websocket/events.js';
 import { targetOf } from './messageService.js';
@@ -126,7 +126,7 @@ export async function serve(req: IncomingMessage, res: ServerResponse, attachmen
     'Content-Length': obj.size,
     'Content-Disposition': disposition,
     'Accept-Ranges': 'bytes',
-    'Cache-Control': 'private, max-age=86400',
+    'Cache-Control': 'private, no-store',
     'Content-Security-Policy': "default-src 'none'; style-src 'unsafe-inline'; sandbox",
     ...(obj.contentRange ? { 'Content-Range': obj.contentRange } : {}),
   });
@@ -147,24 +147,43 @@ export async function serveMedia(res: ServerResponse, key: string): Promise<void
 }
 
 export async function remove(attachmentId: string, userId: string): Promise<void> {
-  const att = await queryOne<AttRow>(`SELECT * FROM attachments WHERE id = $1`, [attachmentId]);
-  if (!att) throw Errors.notFound('Файл');
-  const ca = await requireChannel(att.channel_id, userId);
-  const msg = att.message_id ? await findMessage(att.message_id) : null;
-  const own = att.uploader_id === userId;
-  if (!own && !canManage(ca, Perm.MANAGE_MESSAGES)) throw Errors.forbidden('Нет права удалять этот файл');
-  await execute(`DELETE FROM attachments WHERE id = $1`, [attachmentId]);
-  await storage.delete(att.storage_key).catch(() => undefined);
-  if (att.preview_key) await storage.delete(att.preview_key).catch(() => undefined);
-  if (msg) {
-    const left = await queryOne<{ n: number }>(`SELECT count(*)::int AS n FROM attachments WHERE message_id = $1`, [msg.id]);
-    if (!msg.content && !(msg.embeds?.length) && (left?.n ?? 0) === 0) {
-      await execute(`DELETE FROM messages WHERE id = $1`, [msg.id]);
-      await emit(Ev.MessageDelete, { id: msg.id, channelId: msg.channel_id, serverId: msg.server_id }, targetOf(ca));
-    } else {
-      const [dto] = await hydrate([(await findMessage(msg.id))!], userId);
-      await emit(Ev.MessageUpdate, dto, targetOf(ca));
+  let observed=false;
+  for(;;){
+    const att = await queryOne<AttRow>(`SELECT * FROM attachments WHERE id = $1`, [attachmentId]);
+    if (!att) {if(observed)return;throw Errors.notFound('Файл');}
+    const ca = await requireChannel(att.channel_id, userId);
+    if (att.uploader_id !== userId && !canManage(ca, Perm.MANAGE_MESSAGES)) throw Errors.forbidden('Нет права удалять этот файл');
+    observed=true;
+    const result=await tx(async(db)=>{
+      // Message deletion locks the parent before cascading to attachments. Keep
+      // that order, and serialize the decision to remove an emptied message.
+      const msg=att.message_id?await queryOne<MessageRow>(`SELECT ${MESSAGE_COLUMNS} FROM messages m
+        JOIN channels c ON c.id=m.channel_id WHERE m.id=$1 FOR UPDATE OF m`,[att.message_id],db):null;
+      if(att.message_id && !msg)return {retry:false,removed:att,message:null,deleted:false};
+      const removed=await queryOne<AttRow>(`DELETE FROM attachments WHERE id=$1
+        AND message_id IS NOT DISTINCT FROM $2::bigint RETURNING *`,[att.id,att.message_id],db);
+      // A pending upload may have been linked while we waited. Release its row
+      // before retrying with the new parent, rather than locking parent after child.
+      if(!removed)return {retry:true,removed:null,message:null,deleted:false};
+      if(!msg)return {retry:false,removed,message:null,deleted:false};
+      const left=await queryOne<{n:number}>(`SELECT count(*)::int AS n FROM attachments WHERE message_id=$1`,[msg.id],db);
+      const deleted=!msg.content && !msg.embeds?.length && left!.n===0;
+      if(deleted)await execute(`DELETE FROM messages WHERE id=$1`,[msg.id],db);
+      return {retry:false,removed,message:msg,deleted};
+    });
+    if(result.retry)continue;
+    await storage.delete(result.removed!.storage_key).catch(()=>undefined);
+    if(result.removed!.preview_key)await storage.delete(result.removed!.preview_key).catch(()=>undefined);
+    const msg=result.message;
+    if(msg){
+      if(result.deleted){
+        await emit(Ev.MessageDelete,{id:msg.id,channelId:msg.channel_id,serverId:msg.server_id},targetOf(ca));
+      }else{
+        const current=await findMessage(msg.id);
+        if(current){const [dto]=await hydrate([current],userId);await emit(Ev.MessageUpdate,dto,targetOf(ca));}
+      }
     }
+    return;
   }
 }
 

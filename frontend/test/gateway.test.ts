@@ -52,6 +52,18 @@ test('missing heartbeat acknowledgement recovers a silent open socket',async(t)=
  t.mock.timers.tick(1000);assert.equal(Socket.instances.length,2);assert.equal(h.revoked(),0);
 });
 
+test('a stalled websocket handshake times out and can reconnect',async(t)=>{
+ const h=harness(t);h.gateway.start();const connecting=Socket.instances[0]!;
+ t.mock.timers.tick(15_000);await flush();assert.ok(connecting.closes.includes(4000));
+ t.mock.timers.tick(1000);assert.equal(Socket.instances.length,2);assert.equal(h.revoked(),0);
+});
+
+test('heartbeats cannot leave an authenticated socket waiting for ready forever',async(t)=>{
+ const h=harness(t);h.gateway.start();const socket=Socket.instances[0]!;socket.open();socket.message('hello',{heartbeatInterval:1000});
+ for(let i=0;i<30;i++){socket.message('heartbeat:ack');t.mock.timers.tick(1000);}
+ await flush();assert.ok(socket.closes.includes(4000));assert.equal(h.revoked(),0);
+});
+
 test('logout during refresh cannot revive the gateway or the old access token',async(t)=>{
  const h=harness(t);let complete!:(response:Response)=>void;
  t.mock.method(globalThis,'fetch',()=>new Promise<Response>(resolve=>{complete=resolve;}));

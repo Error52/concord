@@ -7,6 +7,7 @@ import { toast, uiStore, useUi } from '../../state/ui';
 import { can, Perm } from '../../utils/permissions';
 import { formatBytes } from '../../utils/format';
 import {newMessageNonce} from '../../utils/ids';
+import {composerRetryNonce,rememberComposerSend,restoreComposerDraft,useComposerDraft} from '../../state/composerDrafts';
 import { Avatar } from '../ui/Avatar';
 import { ComposerPicker, type PickerTab } from './Pickers';
 import type { Attachment, Gif, User } from '../../types';
@@ -39,7 +40,6 @@ interface Props {
 }
 
 export const Composer = forwardRef<ComposerHandle, Props>(function Composer({ channelId, serverId, placeholder, fixedReplyTo, compact }, ref) {
-  const [text, setText] = useState('');
   const [uploads, setUploads] = useState<Upload[]>([]);
   const [picker, setPicker] = useState<PickerTab | null>(null);
   const [suggest, setSuggest] = useState<{ query: string; start: number; index: number } | null>(null);
@@ -47,7 +47,6 @@ export const Composer = forwardRef<ComposerHandle, Props>(function Composer({ ch
   const [sending,setSending]=useState(false);
   const sendingRef=useRef(0);
   const sendChain=useRef<Promise<unknown>>(Promise.resolve());
-  const failedSend=useRef<{key:string;nonce:string}|null>(null);
   const reservedUploads=useRef(new Set<string>());
   const active=useRef(false);
   const resources=useRef(new Map<string,Upload>());
@@ -70,6 +69,7 @@ export const Composer = forwardRef<ComposerHandle, Props>(function Composer({ ch
 
   // Draft per channel survives navigation.
   const draftKey = `${accountId}:${channelId}:${fixedReplyTo ?? ''}`;
+  const [text,setText]=useComposerDraft(draftKey);
   const releaseUpload=(key:string)=>{
     const upload=resources.current.get(key);if(!upload)return;
     resources.current.delete(key);upload.handle?.abort();
@@ -77,16 +77,12 @@ export const Composer = forwardRef<ComposerHandle, Props>(function Composer({ ch
   };
   useEffect(() => {
     active.current=true;
-    setText(drafts.get(draftKey) ?? '');
     setUploads([]);
     return ()=>{
       active.current=false;
       for(const key of resources.current.keys())releaseUpload(key);
     };
   }, [draftKey]);
-  useEffect(() => {
-    drafts.set(draftKey, text);
-  }, [draftKey, text]);
 
   useEffect(() => {
     if (cooldown <= 0) return;
@@ -178,7 +174,7 @@ export const Composer = forwardRef<ComposerHandle, Props>(function Composer({ ch
     if (!content && attachmentIds.length === 0 && !gif) return;
     const original=text,keys=new Set(available.map(u=>u.key));
     keys.forEach(key=>reservedUploads.current.add(key));
-    ++sendingRef.current;setSending(true);setText('');drafts.set(draftKey,'');
+    ++sendingRef.current;setSending(true);if(!gif)setText('');
     const payload={
       content,
       replyToId: replyId,
@@ -186,13 +182,14 @@ export const Composer = forwardRef<ComposerHandle, Props>(function Composer({ ch
       gif: gif ? { url: gif.url, previewUrl: gif.previewUrl, width: gif.width, height: gif.height, title: gif.title } : null,
     };
     const requestKey=JSON.stringify([draftKey,payload]);
-    const nonce=failedSend.current?.key===requestKey?failedSend.current.nonce:newMessageNonce();
+    const nonce=composerRetryNonce(draftKey,requestKey)??newMessageNonce();
     const pendingSend=sendChain.current.then(()=>getState().me?.id===accountId?sendMessage(channelId,{...payload,nonce}):false);
     sendChain.current=pendingSend.catch(()=>false);
     const ok=await pendingSend;
-    failedSend.current=ok?null:{key:requestKey,nonce};
+    rememberComposerSend(draftKey,requestKey,nonce,ok);
     --sendingRef.current;keys.forEach(key=>reservedUploads.current.delete(key));
-    if(!active.current||getState().me?.id!==accountId){if(getState().me?.id===accountId&&!ok&&original&&!drafts.get(draftKey))drafts.set(draftKey,original);return;}
+    if(!ok&&!gif)restoreComposerDraft(draftKey,original);
+    if(!active.current||getState().me?.id!==accountId)return;
     setSending(sendingRef.current>0);
     if(!ok){if(original)setText(current=>current||original);return;}
     for(const key of keys)releaseUpload(key);
@@ -379,8 +376,6 @@ export const Composer = forwardRef<ComposerHandle, Props>(function Composer({ ch
     </div>
   );
 });
-
-const drafts = new Map<string, string>();
 
 function findUserId(name: string, serverId: string | null, channelId: string): string | null {
   const s = getState();

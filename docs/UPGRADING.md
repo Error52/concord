@@ -2,6 +2,18 @@
 
 Keep `.env`, uploads and database volumes. Do not use `docker compose down -v` to update an installation.
 
+## Sessions, voice history and read markers
+
+This update adds `008_voice_call_history.sql`, `009_read_state_revision.sql` and `010_call_ring_history.sql`. Backend startup applies them automatically. Deploy frontend/backend together and stop older backend replicas: every writer must advance read-state revisions and use the new call-history claim. Account data and uploads are retained. The durable ring marker preserves missed-call history after the ringing key expires in Redis; a solo visit without a call does not create a missed-call entry.
+
+Access checks now confirm the active session family in PostgreSQL as well as Redis. Refresh rotation keeps earlier access/media grants valid while that family is active; logout, password reset and session revocation invalidate the family. New LiveKit grants carry a server-signed session identifier. Revoking a family removes its active participant without removing a participant signed in through another device. Signed join webhooks and periodic reconciliation also reject revoked, foreign and malformed session bindings. SFU removal remains best effort during an SFU/network outage; a join can briefly reach the SFU before its webhook is processed.
+
+Old, unfinished MFA tickets and 2FA setup payloads must be started again after deployment. Existing enabled 2FA secrets are preserved. With mandatory email verification enabled, users must confirm their email before setting up 2FA.
+
+Legacy participants without a session binding are accepted only during the first five minutes after a backend process starts. Webhooks and the 30-second reconciliation cycle remove them after that grace, even if the SFU refreshed their old grant. Reconnect the client to obtain a new bound grant; restarting the backend starts its transition grace again. Stop older replicas, which do not enforce the binding.
+
+See [the detailed verification report](VERIFICATION-DEEP-2026-10-17.md) for regression tests, media measurements and remaining limits.
+
 ## Concurrent sends, calls and notifications
 
 The latest update adds migrations `006_message_nonce.sql` (durable retry keys) and `007_notification_revision.sql` (notification revisions). Backend startup applies both automatically. Existing accounts, messages, attachments and sessions are retained. Deploy frontend/backend together and stop old backend replicas, which do not advance notification revisions. The new frontend also identifies each ringing call so stale tab actions cannot cancel a newer call. Results: [concurrency verification](VERIFICATION-CONCURRENCY-2026-10-16.md).

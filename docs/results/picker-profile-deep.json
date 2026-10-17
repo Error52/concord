@@ -1,0 +1,10 @@
+{
+  "checks": [
+    "a late GIF search response cannot replace the current query",
+    "clearing GIF search rejects late results and their pagination cursor",
+    "sending a GIF preserves the current text draft",
+    "a stale profile response cannot replace the selected user or mutual servers",
+    "a stale profile failure cannot close a newer profile"
+  ],
+  "errors": []
+}

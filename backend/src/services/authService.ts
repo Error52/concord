@@ -35,12 +35,16 @@ async function issueAccess(userId: string, sessionId: string, db?: Queryable): P
   return signJwt({ sub: userId, sid: sessionId, typ: 'access', ev: row?.verified ?? false }, config.JWT_SECRET, config.ACCESS_TOKEN_TTL_SEC);
 }
 
-async function createSession(userId: string, client: ClientInfo, familyId: string = randomUUID(), db?: Queryable, expectedPasswordHash?:string): Promise<SessionTokens> {
-  if (!db) return tx((transaction) => createSession(userId, client, familyId, transaction, expectedPasswordHash));
+interface LoginSnapshot { passwordHash:string; totpSecret:string|null; totpEnabled:boolean }
+
+async function createSession(userId: string, client: ClientInfo, familyId: string = randomUUID(), db?: Queryable, expectedLogin?:LoginSnapshot): Promise<SessionTokens> {
+  if (!db) return tx((transaction) => createSession(userId, client, familyId, transaction, expectedLogin));
   await lockUserSessions(userId, db);
-  if(expectedPasswordHash){
-    const current=await queryOne<{password_hash:string}>(`SELECT password_hash FROM users WHERE id=$1`,[userId],db);
-    if(current?.password_hash!==expectedPasswordHash)throw new AppError(401,'INVALID_CREDENTIALS','Неверный email или пароль');
+  if(expectedLogin){
+    const current=await queryOne<{password_hash:string;totp_secret:string|null;totp_enabled:boolean}>(`SELECT password_hash,totp_secret,totp_enabled FROM users WHERE id=$1`,[userId],db);
+    if(current?.password_hash!==expectedLogin.passwordHash)throw new AppError(401,'INVALID_CREDENTIALS','Неверный email или пароль');
+    if(current.totp_enabled!==expectedLogin.totpEnabled || current.totp_secret!==expectedLogin.totpSecret)
+      throw new AppError(401,'MFA_EXPIRED','Настройки двухфакторного входа изменились, войдите заново');
   }
   const secret = randomBytes(32).toString('base64url');
   const maxAge = config.REFRESH_TOKEN_TTL_DAYS * 86_400;
@@ -66,6 +70,8 @@ async function revokeSessions(ids: string[]): Promise<void> {
   for (const id of ids) pipe.set(revokedSessionKey(id), '1', 'EX', ttl);
   await pipe.exec();
   await control({ kind: 'revoke', sessionIds: ids });
+  await import('./voiceService.js').then(voice => voice.disconnectRevokedSessions(ids))
+    .catch(err => log.warn('revoked media disconnect failed; admission and reconciliation still enforce session validity', {err}));
 }
 
 export interface RegisterInput {
@@ -113,23 +119,23 @@ export async function login(email: string, password: string, client: ClientInfo)
   const ok = await verifyPassword(password, row?.password_hash ?? (await getDummyHash()));
   if (!row || !ok) throw new AppError(401, 'INVALID_CREDENTIALS', 'Неверный email или пароль');
   if (row.totp_enabled) {
-    return { kind: 'mfa', ticket: signJwt({ sub: row.id, typ: 'mfa', pv:sha256(row.password_hash) }, config.JWT_SECRET, 300) };
+    return { kind: 'mfa', ticket: signJwt({ sub: row.id, typ: 'mfa', pv:sha256(row.password_hash), mv:sha256(row.totp_secret ?? '') }, config.JWT_SECRET, 300) };
   }
-  return { kind: 'ok', user: await users.toSelf(row), tokens: await createSession(row.id, client, undefined, undefined, row.password_hash) };
+  return { kind: 'ok', user: await users.toSelf(row), tokens: await createSession(row.id, client, undefined, undefined, {passwordHash:row.password_hash,totpSecret:row.totp_secret,totpEnabled:row.totp_enabled}) };
 }
 
 export async function completeMfa(ticket: string, code: string, client: ClientInfo): Promise<{ user: SelfUser; tokens: SessionTokens }> {
-  const claims = verifyJwt<{ sub: string; typ: string; pv?:string }>(ticket, config.JWT_SECRET);
+  const claims = verifyJwt<{ sub: string; typ: string; pv?:string; mv?:string }>(ticket, config.JWT_SECRET);
   if (!claims || claims.typ !== 'mfa') throw new AppError(401, 'MFA_EXPIRED', 'Сессия входа истекла, войдите заново');
   const row = await users.findById(claims.sub);
-  if(row && claims.pv!==sha256(row.password_hash))throw new AppError(401,'MFA_EXPIRED','Сессия входа истекла, войдите заново');
+  if(row && (claims.pv!==sha256(row.password_hash) || claims.mv!==sha256(row.totp_secret ?? '')))throw new AppError(401,'MFA_EXPIRED','Сессия входа истекла, войдите заново');
   if (!row?.totp_enabled || !row.totp_secret || !verifyTotp(row.totp_secret, code)) {
     throw new AppError(401, 'INVALID_CODE', 'Неверный код подтверждения');
   }
   // Prevent replay of the same code within its validity window.
   const replayKey = `totp-used:${row.id}:${code}`;
   if ((await redis.set(replayKey, '1', 'EX', 90, 'NX')) !== 'OK') throw new AppError(401, 'INVALID_CODE', 'Код уже использован');
-  return { user: await users.toSelf(row), tokens: await createSession(row.id, client, undefined, undefined, row.password_hash) };
+  return { user: await users.toSelf(row), tokens: await createSession(row.id, client, undefined, undefined, {passwordHash:row.password_hash,totpSecret:row.totp_secret,totpEnabled:true}) };
 }
 
 interface SessionRow {
@@ -154,7 +160,7 @@ export async function refresh(cookieValue: string | undefined, client: ClientInf
   const [sessionId, secret, extra] = cookieValue.split('.');
   if (!sessionId || !secret || extra !== undefined || !UUID_PATTERN.test(sessionId)) throw invalid;
 
-  const result = await tx(async (db): Promise<SessionTokens | {reusedFamily:string}> => {
+  const result = await tx(async (db): Promise<SessionTokens | {reusedSessions:string[]}> => {
     const owner=await queryOne<{user_id:string}>(`SELECT user_id FROM sessions WHERE id=$1`,[sessionId],db);
     if(!owner)throw invalid;
     await lockUserSessions(owner.user_id,db);
@@ -166,7 +172,10 @@ export async function refresh(cookieValue: string | undefined, client: ClientInf
     if (s.rotated_at) {
       if (Date.now() - s.rotated_at.getTime() > ROTATION_GRACE_MS) {
         log.warn('refresh token reuse detected; revoking family', { userId: s.user_id });
-        return {reusedFamily:s.family_id};
+        // Keep family revocation under the same lock as rotation. Capturing IDs after
+        // releasing it lets a concurrent refresh create an unrevoked descendant.
+        const family=await query<{id:string}>(`UPDATE sessions SET revoked_at=coalesce(revoked_at,now()) WHERE family_id=$1 RETURNING id`,[s.family_id],db);
+        return {reusedSessions:family.map(f=>f.id)};
       }
       const cached = await redis.get(`refresh-rotation:${s.id}`);
       const replacement = s.replaced_by ? await queryOne<{revoked_at:Date|null;expires_at:Date}>(`SELECT revoked_at, expires_at FROM sessions WHERE id=$1`, [s.replaced_by], db) : null;
@@ -181,9 +190,8 @@ export async function refresh(cookieValue: string | undefined, client: ClientInf
     await redis.set(`refresh-rotation:${s.id}`, JSON.stringify(next), 'PX', ROTATION_GRACE_MS);
     return next;
   });
-  if ('reusedFamily' in result) {
-    const family = await query<{id:string}>(`SELECT id FROM sessions WHERE family_id=$1`, [result.reusedFamily]);
-    await revokeSessions(family.map((f)=>f.id));
+  if ('reusedSessions' in result) {
+    await revokeSessions(result.reusedSessions);
     throw invalid;
   }
   return result;
@@ -236,7 +244,8 @@ export async function changePassword(userId: string, sessionId: string, current:
     await lockUserSessions(userId,db);
     const latest=await users.findById(userId,db);
     if(!latest || latest.password_hash!==row.password_hash)throw new AppError(409,'PASSWORD_CHANGED','Пароль уже изменён. Войдите заново.');
-    const currentSession=await queryOne<{family_id:string}>(`SELECT family_id FROM sessions WHERE id=$1 AND user_id=$2`,[sessionId,userId],db);
+    const currentSession=await queryOne<{family_id:string}>(`SELECT s.family_id FROM sessions s WHERE s.id=$1 AND s.user_id=$2
+      AND EXISTS (SELECT 1 FROM sessions active WHERE active.family_id=s.family_id AND active.revoked_at IS NULL AND active.expires_at>now())`,[sessionId,userId],db);
     if(!currentSession)throw new AppError(401,'SESSION_EXPIRED','Сессия истекла');
     await execute(`UPDATE users SET password_hash=$2,updated_at=now() WHERE id=$1`,[userId,passwordHash],db);
     await execute(`UPDATE password_resets SET used_at=now() WHERE user_id=$1 AND used_at IS NULL`,[userId],db);
@@ -252,6 +261,9 @@ export async function requestPasswordReset(email: string): Promise<void> {
   const token = randomBytes(32).toString('base64url');
   const link = `${config.APP_URL}/reset-password?token=${token}`;
   await tx(async (db) => {
+    // Confirmation and password changes use this lock before touching reset rows.
+    // Take it before the user row as well, so forgot/confirm cannot lock each other.
+    await lockUserSessions(row.id,db);
     await queryOne(`SELECT id FROM users WHERE id=$1 FOR UPDATE`, [row.id], db);
     await execute(`UPDATE password_resets SET used_at=now() WHERE user_id=$1 AND used_at IS NULL`, [row.id], db);
     const reset=await queryOne<{expires_at:Date}>(`INSERT INTO password_resets (user_id, token_hash, expires_at) VALUES ($1,$2,now()+interval '1 hour') RETURNING expires_at`, [row.id,sha256(token)], db);
@@ -325,20 +337,37 @@ export async function confirmEmail(token:string):Promise<{userId:string}> {
 // ─────────────── TOTP 2FA ───────────────
 
 export async function beginTotpSetup(userId: string): Promise<{ secret: string; otpauthUrl: string }> {
-  const row = await users.findById(userId);
-  if (!row) throw Errors.notFound('Пользователь');
-  if (row.totp_enabled) throw Errors.conflict('TOTP_ENABLED', 'Двухфакторная аутентификация уже включена');
-  const secret = generateTotpSecret();
-  await redis.set(`totp-setup:${userId}`, secret, 'EX', 600);
-  return { secret, otpauthUrl: otpauthUrl(secret, row.email) };
+  return tx(async(db)=>{
+    await lockUserSessions(userId,db);
+    const row = await users.findById(userId,db);
+    if (!row) throw Errors.notFound('Пользователь');
+    if(config.REQUIRE_EMAIL_VERIFICATION && !row.email_verified_at)
+      throw new AppError(403,'EMAIL_UNVERIFIED','Подтвердите почту, чтобы настроить двухфакторный вход');
+    if (row.totp_enabled) throw Errors.conflict('TOTP_ENABLED', 'Двухфакторная аутентификация уже включена');
+    const secret = generateTotpSecret();
+    // A password reset invalidates setup started in a formerly authenticated session.
+    await redis.set(`totp-setup:${userId}`, JSON.stringify({secret,pv:sha256(row.password_hash)}), 'EX', 600);
+    return { secret, otpauthUrl: otpauthUrl(secret, row.email) };
+  });
 }
 
 export async function enableTotp(userId: string, code: string): Promise<void> {
-  const secret = await redis.get(`totp-setup:${userId}`);
-  if (!secret) throw new AppError(400, 'TOTP_SETUP_EXPIRED', 'Начните настройку заново');
-  if (!verifyTotp(secret, code)) throw new AppError(400, 'INVALID_CODE', 'Неверный код подтверждения');
-  await execute(`UPDATE users SET totp_secret = $2, totp_enabled = true, updated_at = now() WHERE id = $1`, [userId, secret]);
-  await redis.del(`totp-setup:${userId}`);
+  await tx(async(db)=>{
+    await lockUserSessions(userId,db);
+    const row=await users.findById(userId,db);
+    if(!row)throw Errors.notFound('Пользователь');
+    if(config.REQUIRE_EMAIL_VERIFICATION && !row.email_verified_at)
+      throw new AppError(403,'EMAIL_UNVERIFIED','Подтвердите почту, чтобы настроить двухфакторный вход');
+    if(row.totp_enabled)throw Errors.conflict('TOTP_ENABLED','Двухфакторная аутентификация уже включена');
+    const raw = await redis.get(`totp-setup:${userId}`);
+    let setup:{secret?:string;pv?:string}|null=null;
+    try{setup=raw?JSON.parse(raw) as {secret?:string;pv?:string}:null;}catch{/* A pre-upgrade setup must be restarted. */}
+    if (!setup || typeof setup.secret!=='string' || setup.pv!==sha256(row.password_hash))
+      throw new AppError(400, 'TOTP_SETUP_EXPIRED', 'Начните настройку заново');
+    if (!verifyTotp(setup.secret, code)) throw new AppError(400, 'INVALID_CODE', 'Неверный код подтверждения');
+    await execute(`UPDATE users SET totp_secret = $2, totp_enabled = true, updated_at = now() WHERE id = $1`, [userId, setup.secret],db);
+    await redis.del(`totp-setup:${userId}`);
+  });
 }
 
 export async function disableTotp(userId: string, password: string, code: string): Promise<void> {
@@ -346,7 +375,14 @@ export async function disableTotp(userId: string, password: string, code: string
   if (!row?.totp_enabled || !row.totp_secret) throw new AppError(400, 'TOTP_DISABLED', '2FA не включена');
   if (!(await verifyPassword(password, row.password_hash))) throw new AppError(400, 'INVALID_PASSWORD', 'Неверный пароль');
   if (!verifyTotp(row.totp_secret, code)) throw new AppError(400, 'INVALID_CODE', 'Неверный код подтверждения');
-  await execute(`UPDATE users SET totp_secret = NULL, totp_enabled = false, updated_at = now() WHERE id = $1`, [userId]);
+  await tx(async(db)=>{
+    await lockUserSessions(userId,db);
+    const latest=await users.findById(userId,db);
+    if(!latest || latest.password_hash!==row.password_hash || latest.totp_secret!==row.totp_secret || !latest.totp_enabled)
+      throw new AppError(409,'AUTH_CHANGED','Настройки безопасности изменились. Повторите действие.');
+    await execute(`UPDATE users SET totp_secret = NULL, totp_enabled = false, updated_at = now() WHERE id = $1`, [userId],db);
+    await redis.del(`totp-setup:${userId}`);
+  });
 }
 
 export async function touchSession(sessionId: string): Promise<void> {

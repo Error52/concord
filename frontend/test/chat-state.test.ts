@@ -10,7 +10,7 @@ const {api}=await import('../src/api/client');
 const {appStore,initialState,getState}=await import('../src/state/app');
 const {loadMessages,loadOlder,loadNewer,markRead,gateway,markNotificationsRead,clearNotifications,refreshServer}=await import('../src/state/actions');
 const {routerStore}=await import('../src/state/router');
-const {closeDm}=await import('../src/state/serverActions');
+const {closeDm,sendFriendRequest,acceptFriend}=await import('../src/state/serverActions');
 const channelId='00000000-0000-4000-8000-000000000001';
 const message=(id:string,content=id):Message=>({id,content,channelId,serverId:null,author:null,kind:'default',replyTo:null,attachments:[],embeds:[],reactions:[],mentionIds:[],mentionsEveryone:false,pinned:false,editedAt:null,createdAt:'2026-10-16T00:00:00Z'});
 function reset(items:Message[]=[],atLatest=true){routerStore.set({route:{name:'friends'}});appStore.set({...initialState,auth:'authed',me:{id:'me'} as SelfUser,channels:{[channelId]:{id:channelId,lastMessageId:items.at(-1)?.id} as Channel},messages:{[channelId]:{items,loading:false,atLatest,hasMoreBefore:true}}});}
@@ -30,6 +30,33 @@ test('server refresh ignores older responses and a newer ready snapshot',async(t
  const stale=deferred<any>();t.mock.method(api,'get',()=>stale.promise);const loading=refreshServer('server');
  event('ready',{user:{id:'me'},dms:[],relationships:[],readStates:[],notifications:{items:[],unread:0},incomingCalls:[],features:{gif:{enabled:false}},servers:[],dmVoiceStates:[],voiceState:null});
  stale.resolve(fullServer());await loading;assert.equal(getState().servers.server,undefined);
+});
+
+test('server refresh replays channel and member changes received during its snapshot',async(t)=>{
+ reset();const full=fullServer();full.members=[{serverId:'server',user:{id:'departing'},roleIds:[]}];event('server:create',full);
+ const response=deferred<any>();t.mock.method(api,'get',()=>response.promise);const loading=refreshServer('server');
+ event('channel:delete',{id:channelId,serverId:'server'});
+ event('channel:create',{id:'new-channel',serverId:'server',name:'Created live'});
+ event('member:leave',{serverId:'server',userId:'departing'});
+ event('member:join',{serverId:'server',user:{id:'joining'},roleIds:[]});
+ response.resolve(full);await loading;
+ assert.equal(getState().channels[channelId],undefined);assert.equal(getState().channels['new-channel']?.name,'Created live');
+ assert.equal(getState().members.server?.departing,undefined);assert.equal(getState().members.server?.joining?.user.id,'joining');
+});
+
+test('server refresh retains current voice state, profile, and message marker',async(t)=>{
+ reset();const full=fullServer();full.channels[0].lastMessageId='100';full.members=[{serverId:'server',user:{id:'other',username:'Old'},roleIds:[]}];
+ full.voiceStates=[{serverId:'server',channelId,userId:'other',selfMute:false}];event('server:create',full);
+ const response=deferred<any>();t.mock.method(api,'get',()=>response.promise);const loading=refreshServer('server');
+ event('voice:leave',{userId:'other',channelId});event('user:update',{id:'other',username:'New'});event('message:new',{...message('500'),serverId:'server'});
+ response.resolve(full);await loading;
+ assert.equal(getState().voiceStates.other,undefined);assert.equal(getState().users.other?.username,'New');assert.equal(getState().channels[channelId]?.lastMessageId,'500');
+});
+
+test('ready removes inaccessible server data and expired activity from the old connection',()=>{
+ reset();event('server:create',fullServer());appStore.set({typing:{[channelId]:{other:{name:'Old',until:Date.now()+8000}}},speaking:{other:true}});
+ event('ready',{user:{id:'me'},dms:[],relationships:[],readStates:[],notifications:{items:[],unread:0},incomingCalls:[],features:{gif:{enabled:false}},servers:[],dmVoiceStates:[],voiceState:null});
+ assert.deepEqual(getState().roles,{});assert.deepEqual(getState().members,{});assert.deepEqual(getState().permissions,{});assert.deepEqual(getState().typing,{});assert.deepEqual(getState().speaking,{});
 });
 
 test('a superseded history request cannot replace a newer window',async(t)=>{
@@ -96,6 +123,34 @@ test('duplicate message delivery does not count a mention twice',()=>{
  reset();const m={...message('400'),mentionIds:['me'],author:{id:'other'} as any};
  event('message:new',m);event('message:new',m);
  assert.equal(getState().readStates[channelId]!.mentionCount,1);
+});
+
+test('ready read revisions prevent replayed messages from counting existing mentions again',()=>{
+ reset();event('ready',{user:{id:'me'},dms:[],relationships:[],readStates:[{channelId,lastReadId:'50',mentionCount:2,revision:'4'}],notifications:{items:[],unread:0},incomingCalls:[],features:{gif:{enabled:false}},servers:[],dmVoiceStates:[],voiceState:null});
+ event('message:new',{...message('100'),mentionIds:['me'],author:{id:'other'}});
+ event('message:new',{...message('200'),author:{id:'me'}});
+ assert.deepEqual(getState().readStates[channelId],{channelId,lastReadId:'50',mentionCount:2,revision:'4'});
+ event('read:update',{channelId,lastReadId:'200',mentionCount:0,revision:'5'});
+ assert.deepEqual(getState().readStates[channelId],{channelId,lastReadId:'200',mentionCount:0,revision:'5'});
+});
+
+test('read state revisions reject old deliveries and allow an explicit newer mark unread',()=>{
+ reset();event('read:update',{channelId,lastReadId:'200',mentionCount:0,revision:'8'});
+ event('read:update',{channelId,lastReadId:'100',mentionCount:4,revision:'7'});
+ event('read:update',{channelId,lastReadId:'50',mentionCount:8});
+ assert.equal(getState().readStates[channelId]?.lastReadId,'200');
+ event('read:update',{channelId,lastReadId:'100',mentionCount:4,revision:'9'});
+ assert.deepEqual(getState().readStates[channelId],{channelId,lastReadId:'100',mentionCount:4,revision:'9'});
+ event('message:new',{...message('300'),mentionIds:['me'],author:{id:'other'}});
+ assert.equal(getState().readStates[channelId]?.mentionCount,4);
+});
+
+test('a late failed acknowledgement retains a newer read state revision',async(t)=>{
+ reset([message('300')]);appStore.set({readStates:{[channelId]:{channelId,lastReadId:'100',mentionCount:2,revision:'3'}}});
+ let reject!:(err:Error)=>void;t.mock.method(api,'post',()=>new Promise((_resolve,fail)=>reject=fail));
+ const loading=markRead(channelId,'300');assert.equal(getState().readStates[channelId]?.revision,'3');
+ event('read:update',{channelId,lastReadId:'200',mentionCount:1,revision:'4'});reject(new Error('offline'));await loading;
+ assert.deepEqual(getState().readStates[channelId],{channelId,lastReadId:'200',mentionCount:1,revision:'4'});
 });
 
 test('a stale call dismissal does not hide a newer ring in the same DM',()=>{
@@ -170,4 +225,25 @@ test('a close confirmed by a refreshed snapshot still leaves the old DM route',a
  reset();appStore.set({dms:{[channelId]:{id:channelId,recipients:[]} as any}});routerStore.set({route:{name:'dm',channelId}});
  const response=deferred<void>();t.mock.method(api,'del',()=>response.promise);const close=closeDm(channelId);appStore.set({dms:{}});response.resolve();await close;
  assert.equal(routerStore.get().route.name,'friends');
+});
+
+const relation=(id:string):any=>({id,type:'friend',user:{id,username:id}});
+test('a late friend response cannot replace a newer gateway relationship list',async(t)=>{
+ reset();const response=deferred<any[]>();t.mock.method(api,'post',()=>response.promise);
+ const request=sendFriendRequest({userId:'pending'});event('friend:update',[relation('newer')]);response.resolve([relation('old')]);await request;
+ assert.deepEqual(Object.keys(getState().relationships),['newer']);
+});
+
+test('a late friend response is fenced by ready snapshots and account changes',async(t)=>{
+ reset();const response=deferred<any[]>();t.mock.method(api,'post',()=>response.promise);const request=acceptFriend('pending');
+ event('ready',{user:{id:'me'},dms:[],relationships:[relation('snapshot')],readStates:[],notifications:{items:[],unread:0},incomingCalls:[],features:{gif:{enabled:false}},servers:[],dmVoiceStates:[],voiceState:null});
+ response.resolve([relation('old')]);await request;assert.deepEqual(Object.keys(getState().relationships),['snapshot']);
+ const changed=deferred<any[]>();t.mock.method(api,'post',()=>changed.promise);const old=acceptFriend('pending');appStore.set({me:{id:'another'} as SelfUser});changed.resolve([relation('leaked')]);await old;
+ assert.deepEqual(Object.keys(getState().relationships),['snapshot']);
+});
+
+test('concurrent friend HTTP responses retain the newest requested snapshot',async(t)=>{
+ reset();const first=deferred<any[]>(),second=deferred<any[]>();let n=0;t.mock.method(api,'post',()=>++n===1?first.promise:second.promise);
+ const old=acceptFriend('first'),fresh=acceptFriend('second');second.resolve([relation('second')]);await fresh;first.resolve([relation('first')]);await old;
+ assert.deepEqual(Object.keys(getState().relationships),['second']);
 });

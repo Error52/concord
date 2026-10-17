@@ -189,6 +189,7 @@ export interface ReadState {
   channelId: string;
   lastReadId: string;
   mentionCount: number;
+  revision?: string;
 }
 
 export interface Notification {

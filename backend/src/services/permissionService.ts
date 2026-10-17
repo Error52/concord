@@ -38,20 +38,33 @@ export async function getAccess(serverId: string, userId: string, db?: Queryable
   };
 }
 
-export async function requireMember(serverId: string, userId: string): Promise<MemberAccess> {
-  const access = await getAccess(serverId, userId);
+export async function requireMember(serverId: string, userId: string,db?:Queryable): Promise<MemberAccess> {
+  const access = await getAccess(serverId, userId,db);
   // 404 instead of 403: don't confirm the existence of servers the user can't see.
   if (!access) throw Errors.notFound('Сервер');
   return access;
 }
 
-export async function requirePerm(serverId: string, userId: string, flag: bigint, message?: string): Promise<MemberAccess> {
-  const access = await requireMember(serverId, userId);
+export async function requirePerm(serverId: string, userId: string, flag: bigint, message?: string,db?:Queryable): Promise<MemberAccess> {
+  const access = await requireMember(serverId, userId,db);
   if (!has(access.perms, flag)) {
     if (access.timedOutUntil && (flag & TIMEOUT_DENY) !== 0n) throw Errors.forbidden('Вы временно ограничены (тайм-аут)');
     throw Errors.forbidden(message);
   }
   return access;
+}
+
+/** Moderation permissions do not override ownership or the target's role hierarchy. */
+export async function requireManageableMember(serverId:string,actorId:string,targetId:string,flag:bigint,allowSelf=false,db?:Queryable):Promise<MemberAccess>{
+  const actor=await requirePerm(serverId,actorId,flag,undefined,db);
+  const target=await requireMember(serverId,targetId,db);
+  if(actorId===targetId){
+    if(allowSelf)return actor;
+    throw Errors.badRequest('Нельзя применить это действие к себе');
+  }
+  if(target.isOwner)throw Errors.forbidden('Нельзя модерировать владельца сервера');
+  if(!actor.isOwner&&actor.topPosition<=target.topPosition)throw Errors.forbidden('Роль участника выше или равна вашей');
+  return actor;
 }
 
 export interface ChannelAccess {

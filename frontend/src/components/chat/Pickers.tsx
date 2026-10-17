@@ -83,6 +83,10 @@ function GifPanel({ onPick }: { onPick: (g: Gif) => void }) {
   const [next, setNext] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const requestGeneration=useRef(0);
+  const loadingRef=useRef(false);
+
+  useEffect(()=>()=>{++requestGeneration.current;loadingRef.current=false;},[]);
 
   useEffect(() => {
     if (!enabled) return;
@@ -95,24 +99,31 @@ function GifPanel({ onPick }: { onPick: (g: Gif) => void }) {
   }, [q]);
 
   const load = async (search: string | null | 'trending', pos: string | null) => {
+    if(pos&&loadingRef.current)return;
+    const generation=pos?requestGeneration.current:++requestGeneration.current;
+    loadingRef.current=true;
     setLoading(true);
     try {
       const page = await api.get<GifPage>(
         search === 'trending' ? `/gifs/trending?locale=${locale()}${pos ? `&pos=${pos}` : ''}` : `/gifs/search?locale=${locale()}&q=${encodeURIComponent(search ?? '')}${pos ? `&pos=${pos}` : ''}`,
       );
-      setItems((cur) => (pos ? [...cur, ...page.items] : page.items));
+      if(generation!==requestGeneration.current)return;
+      setItems((cur) => pos?[...new Map([...cur,...page.items].map(g=>[g.id,g])).values()]:page.items);
       setNext(page.next);
       setError(null);
     } catch (e) {
-      setError(errorMessage(e));
+      if(generation===requestGeneration.current)setError(errorMessage(e));
     } finally {
-      setLoading(false);
+      if(generation===requestGeneration.current){loadingRef.current=false;setLoading(false);}
     }
   };
 
   useEffect(() => {
     if (query) void load(query, null);
-    else setItems([]);
+    else {
+      ++requestGeneration.current;loadingRef.current=false;
+      setItems([]);setNext(null);setError(null);setLoading(false);
+    }
   }, [query]);
 
   if (!enabled) {

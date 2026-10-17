@@ -1,0 +1,12 @@
+✔ removing an attachment while its message is deleted completes without a null hydration error (482.064ms)
+✔ concurrent removal of the last two attachments deletes an empty message exactly once (197.9603ms)
+✔ an upload linked to a message during removal cannot leave an empty message behind (181.4499ms)
+✔ full message removal racing its last attachment publishes deletion only for the winner (179.4474ms)
+ℹ tests 4
+ℹ suites 0
+ℹ pass 4
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 1584.9848

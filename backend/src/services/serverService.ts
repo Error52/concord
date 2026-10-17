@@ -1,10 +1,10 @@
 import { randomBytes } from 'node:crypto';
 import { execute, query, queryOne, tx, type Queryable } from '../db/pool.js';
 import { Errors, AppError } from '../http/errors.js';
-import { ADMIN_PERMS, DEFAULT_MEMBER_PERMS, MODERATOR_PERMS, Perm, has } from '../models/permissions.js';
+import { ALL_PERMISSIONS, ADMIN_PERMS, DEFAULT_MEMBER_PERMS, MODERATOR_PERMS, Perm, has } from '../models/permissions.js';
 import * as repo from '../repositories/serverRepo.js';
 import { loadPublicUser } from '../repositories/userRepo.js';
-import { getAccess, requireMember, requirePerm, type MemberAccess } from './permissionService.js';
+import { getAccess, requireMember, requirePerm, requireManageableMember, type MemberAccess } from './permissionService.js';
 import { audit, AuditAction } from './auditService.js';
 import { control, emit } from '../websocket/bus.js';
 import { Ev } from '../websocket/events.js';
@@ -241,7 +241,7 @@ export async function timeout(serverId: string, actorId: string, targetId: strin
 }
 
 export async function setNickname(serverId: string, actorId: string, targetId: string, nickname: string | null) {
-  if (actorId !== targetId) await requirePerm(serverId, actorId, Perm.MANAGE_SERVER);
+  if (actorId !== targetId) await requireManageableMember(serverId, actorId, targetId, Perm.MANAGE_SERVER);
   else await requireMember(serverId, actorId);
   await execute(`UPDATE server_members SET nickname = $3 WHERE server_id = $1 AND user_id = $2`, [serverId, targetId, nickname?.trim() || null]);
   const [member] = await repo.loadMembers(serverId, [targetId]);
@@ -315,25 +315,29 @@ export async function deleteChannel(channelId: string, userId: string): Promise<
 // ─────────────── roles ───────────────
 
 function assertCanGrant(actor: MemberAccess, perms: bigint): void {
+  if (perms < 0n || (perms & ~ALL_PERMISSIONS) !== 0n) throw Errors.badRequest('Недопустимые права роли');
   if (actor.isOwner || has(actor.perms, Perm.ADMINISTRATOR)) return;
   if ((perms & ~actor.perms) !== 0n) throw Errors.forbidden('Нельзя выдать права, которых нет у вас');
 }
 
 export async function createRole(serverId: string, userId: string, input: { name: string; color?: string | null; permissions?: string; hoist?: boolean }) {
-  const actor = await requirePerm(serverId, userId, Perm.MANAGE_ROLES);
-  const perms = BigInt(input.permissions ?? DEFAULT_MEMBER_PERMS.toString());
-  assertCanGrant(actor, perms);
-  // New roles are placed just below the creator's top role so they can still manage them.
-  const position = actor.isOwner ? null : Math.max(1, actor.topPosition);
-  const row = await queryOne<repo.RoleRow>(
-    `INSERT INTO roles (server_id, name, color, permissions, position, hoist)
-     VALUES ($1, $2, $3, $4, coalesce($5, (SELECT coalesce(max(position), 0) + 1 FROM roles WHERE server_id = $1)), $6) RETURNING *`,
-    [serverId, input.name.trim(), input.color ?? null, perms.toString(), position, input.hoist ?? false],
-  );
-  if (position !== null) {
-    await execute(`UPDATE roles SET position = position + 1 WHERE server_id = $1 AND position >= $2 AND id <> $3`, [serverId, position, row!.id]);
-  }
-  const dto = repo.toRole(row!);
+  const dto = await tx(async db => {
+    await lockRoles(db, serverId);
+    const actor = await requirePerm(serverId, userId, Perm.MANAGE_ROLES, undefined, db);
+    const perms = BigInt(input.permissions ?? DEFAULT_MEMBER_PERMS.toString());
+    assertCanGrant(actor, perms);
+    // Insert below the creator and shift the hierarchy in the same transaction.
+    const position = actor.isOwner ? null : Math.max(1, actor.topPosition);
+    const row = await queryOne<repo.RoleRow>(
+      `INSERT INTO roles (server_id, name, color, permissions, position, hoist)
+       VALUES ($1, $2, $3, $4, coalesce($5, (SELECT coalesce(max(position), 0) + 1 FROM roles WHERE server_id = $1)), $6) RETURNING *`,
+      [serverId, input.name.trim(), input.color ?? null, perms.toString(), position, input.hoist ?? false], db,
+    );
+    if (position !== null) {
+      await execute(`UPDATE roles SET position = position + 1 WHERE server_id = $1 AND position >= $2 AND id <> $3`, [serverId, position, row!.id], db);
+    }
+    return repo.toRole(row!);
+  });
   await audit(serverId, userId, AuditAction.RoleCreate, { type: 'role', id: dto.id }, { name: dto.name });
   await emitRoles(serverId);
   return dto;
@@ -344,8 +348,13 @@ async function emitRoles(serverId: string): Promise<void> {
   await emit(Ev.RoleUpdate, { serverId, roles }, { server: serverId });
 }
 
-async function editableRole(serverId: string, roleId: string, actor: MemberAccess): Promise<repo.RoleRow> {
-  const role = await queryOne<repo.RoleRow>(`SELECT * FROM roles WHERE id = $1 AND server_id = $2`, [roleId, serverId]);
+async function lockRoles(db: Queryable, serverId: string): Promise<void> {
+  // Serialize role writes without blocking FK checks of concurrent membership inserts.
+  if (!(await queryOne(`SELECT id FROM servers WHERE id = $1 FOR NO KEY UPDATE`, [serverId], db))) throw Errors.notFound('Сервер');
+}
+
+async function editableRole(serverId: string, roleId: string, actor: MemberAccess, db?: Queryable): Promise<repo.RoleRow> {
+  const role = await queryOne<repo.RoleRow>(`SELECT * FROM roles WHERE id = $1 AND server_id = $2`, [roleId, serverId], db);
   if (!role) throw Errors.notFound('Роль');
   if (!actor.isOwner && role.position >= actor.topPosition && !role.is_default) throw Errors.forbidden('Эта роль выше или равна вашей');
   return role;
@@ -357,25 +366,32 @@ export async function updateRole(
   roleId: string,
   patch: { name?: string; color?: string | null; permissions?: string; hoist?: boolean },
 ) {
-  const actor = await requirePerm(serverId, userId, Perm.MANAGE_ROLES);
-  const role = await editableRole(serverId, roleId, actor);
-  if (patch.permissions !== undefined) assertCanGrant(actor, BigInt(patch.permissions));
-  if (role.is_default && patch.name !== undefined && patch.name !== role.name) throw Errors.badRequest('Базовую роль нельзя переименовать');
-  await execute(
-    `UPDATE roles SET name = coalesce($2, name), color = CASE WHEN $3::boolean THEN $4 ELSE color END,
-            permissions = coalesce($5::bigint, permissions), hoist = coalesce($6, hoist) WHERE id = $1`,
-    [roleId, patch.name?.trim() ?? null, patch.color !== undefined, patch.color ?? null, patch.permissions ?? null, patch.hoist ?? null],
-  );
+  await tx(async db => {
+    await lockRoles(db, serverId);
+    const actor = await requirePerm(serverId, userId, Perm.MANAGE_ROLES, undefined, db);
+    const role = await editableRole(serverId, roleId, actor, db);
+    if (patch.permissions !== undefined) assertCanGrant(actor, BigInt(patch.permissions));
+    if (role.is_default && patch.name !== undefined && patch.name !== role.name) throw Errors.badRequest('Базовую роль нельзя переименовать');
+    await execute(
+      `UPDATE roles SET name = coalesce($2, name), color = CASE WHEN $3::boolean THEN $4 ELSE color END,
+              permissions = coalesce($5::bigint, permissions), hoist = coalesce($6, hoist) WHERE id = $1`,
+      [roleId, patch.name?.trim() ?? null, patch.color !== undefined, patch.color ?? null, patch.permissions ?? null, patch.hoist ?? null], db,
+    );
+  });
   await audit(serverId, userId, AuditAction.RoleUpdate, { type: 'role', id: roleId }, patch);
   if (patch.permissions !== undefined) await syncVoicePermissions(serverId);
   await emitRoles(serverId);
 }
 
 export async function deleteRole(serverId: string, userId: string, roleId: string): Promise<void> {
-  const actor = await requirePerm(serverId, userId, Perm.MANAGE_ROLES);
-  const role = await editableRole(serverId, roleId, actor);
-  if (role.is_default) throw Errors.badRequest('Базовую роль нельзя удалить');
-  await execute(`DELETE FROM roles WHERE id = $1`, [roleId]);
+  const role = await tx(async db => {
+    await lockRoles(db, serverId);
+    const actor = await requirePerm(serverId, userId, Perm.MANAGE_ROLES, undefined, db);
+    const role = await editableRole(serverId, roleId, actor, db);
+    if (role.is_default) throw Errors.badRequest('Базовую роль нельзя удалить');
+    await execute(`DELETE FROM roles WHERE id = $1`, [roleId], db);
+    return role;
+  });
   await syncVoicePermissions(serverId);
   await audit(serverId, userId, AuditAction.RoleDelete, { type: 'role', id: roleId }, { name: role.name });
   await emit(Ev.RoleDelete, { serverId, roleId }, { server: serverId });
@@ -383,24 +399,24 @@ export async function deleteRole(serverId: string, userId: string, roleId: strin
 }
 
 export async function setMemberRoles(serverId: string, actorId: string, targetId: string, roleIds: string[]) {
-  const actor = await requirePerm(serverId, actorId, Perm.MANAGE_ROLES);
-  const target = await getAccess(serverId, targetId);
-  if (!target) throw Errors.notFound('Участник');
-  if (!actor.isOwner && actorId !== targetId && target.topPosition >= actor.topPosition) throw Errors.forbidden('Роль участника выше или равна вашей');
-  const roles = await query<repo.RoleRow>(`SELECT * FROM roles WHERE server_id = $1 AND NOT is_default`, [serverId]);
-  const byId = new Map(roles.map((r) => [r.id, r]));
-  const current = new Set(
-    (await query<{ role_id: string }>(`SELECT role_id FROM member_roles WHERE server_id = $1 AND user_id = $2`, [serverId, targetId])).map((r) => r.role_id),
-  );
   const desired = new Set(roleIds);
-  // Only roles below the actor may be added or removed.
-  for (const id of new Set([...current, ...desired])) {
-    if (current.has(id) === desired.has(id)) continue;
-    const role = byId.get(id);
-    if (!role) throw Errors.notFound('Роль');
-    if (!actor.isOwner && role.position >= actor.topPosition) throw Errors.forbidden(`Нельзя управлять ролью «${role.name}»`);
-  }
   await tx(async (db) => {
+    await lockRoles(db, serverId);
+    await lockMembership(db, serverId, targetId);
+    const actor = await requirePerm(serverId, actorId, Perm.MANAGE_ROLES, undefined, db);
+    const target = await getAccess(serverId, targetId, db);
+    if (!target) throw Errors.notFound('Участник');
+    if (!actor.isOwner && actorId !== targetId && target.topPosition >= actor.topPosition) throw Errors.forbidden('Роль участника выше или равна вашей');
+    const roles = await query<repo.RoleRow>(`SELECT * FROM roles WHERE server_id = $1 AND NOT is_default`, [serverId], db);
+    const byId = new Map(roles.map(r => [r.id, r]));
+    const current = new Set((await query<{role_id: string}>(`SELECT role_id FROM member_roles WHERE server_id = $1 AND user_id = $2`, [serverId, targetId], db)).map(r => r.role_id));
+    for (const id of desired) if (!byId.has(id)) throw Errors.notFound('Роль');
+    for (const id of new Set([...current, ...desired])) {
+      if (current.has(id) === desired.has(id)) continue;
+      const role = byId.get(id)!;
+      if (!actor.isOwner && role.position >= actor.topPosition) throw Errors.forbidden(`Нельзя управлять ролью «${role.name}»`);
+      if (desired.has(id)) assertCanGrant(actor, BigInt(role.permissions));
+    }
     await execute(`DELETE FROM member_roles WHERE server_id = $1 AND user_id = $2`, [serverId, targetId], db);
     for (const id of desired) await execute(`INSERT INTO member_roles (server_id, user_id, role_id) VALUES ($1, $2, $3)`, [serverId, targetId, id], db);
   });

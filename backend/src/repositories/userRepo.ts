@@ -43,9 +43,9 @@ export async function findByUsername(username: string): Promise<UserRow | null> 
   return queryOne<UserRow>(`${SELECT_USER} WHERE lower(u.username) = lower($1)`, [username]);
 }
 
-export async function findManyByIds(ids: string[]): Promise<UserRow[]> {
+export async function findManyByIds(ids: string[],db?:Queryable): Promise<UserRow[]> {
   if (ids.length === 0) return [];
-  return query<UserRow>(`${SELECT_USER} WHERE u.id = ANY($1::uuid[])`, [ids]);
+  return query<UserRow>(`${SELECT_USER} WHERE u.id = ANY($1::uuid[])`, [ids],db);
 }
 
 interface BadgeRow {
@@ -76,7 +76,7 @@ export function toBadge(r: Omit<BadgeRow, 'user_id' | 'server_name'> & { server_
   };
 }
 
-export async function badgesFor(userIds: string[]): Promise<Map<string, BadgeDTO[]>> {
+export async function badgesFor(userIds: string[],db?:Queryable): Promise<Map<string, BadgeDTO[]>> {
   const out = new Map<string, BadgeDTO[]>();
   if (userIds.length === 0) return out;
   const rows = await query<BadgeRow>(
@@ -85,6 +85,7 @@ export async function badgesFor(userIds: string[]): Promise<Map<string, BadgeDTO
       WHERE ub.user_id = ANY($1::uuid[])
       ORDER BY (b.server_id IS NULL) DESC, b.position, b.created_at`,
     [userIds],
+    db,
   );
   for (const r of rows) {
     const list = out.get(r.user_id) ?? [];
@@ -112,9 +113,9 @@ function base(row: UserRow): Omit<PublicUser, 'status' | 'badges'> {
 }
 
 /** Batch-loads public users with live presence and badges. */
-export async function loadPublicUsers(ids: string[]): Promise<Map<string, PublicUser>> {
+export async function loadPublicUsers(ids: string[],db?:Queryable): Promise<Map<string, PublicUser>> {
   const unique = [...new Set(ids.filter(Boolean))];
-  const [rows, statuses, badges] = await Promise.all([findManyByIds(unique), getStatuses(unique), badgesFor(unique)]);
+  const [rows, statuses, badges] = await Promise.all([findManyByIds(unique,db), getStatuses(unique), badgesFor(unique,db)]);
   const out = new Map<string, PublicUser>();
   for (const row of rows) {
     out.set(row.id, { ...base(row), status: statuses.get(row.id) ?? 'offline', badges: badges.get(row.id) ?? [] });

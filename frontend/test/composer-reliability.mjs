@@ -26,6 +26,25 @@ async function login(page,name){await page.getByLabel('Email').fill(`${name}@con
 async function upload(page){await page.locator('.composer-wrap input[type=file]').setInputFiles('test/fixtures/avatar.png');await page.locator('.upload .muted').waitFor();}
 try{
  {
+  const {context,page,input}=await session();await input.fill('draft survives a round trip');
+  await page.getByRole('button',{name:'Личные сообщения',exact:true}).click();await input.waitFor({state:'detached'});
+  await page.getByRole('button',{name:'Demo Server',exact:true}).click();await input.waitFor();assert.equal(await input.inputValue(),'draft survives a round trip');
+  result.checks.push('reopening a channel restores the account draft');await context.close();
+ }
+ {
+  const {context,page,input}=await session();let received,release,firstNonce;const waiting=new Promise(r=>received=r),gate=new Promise(r=>release=r),pattern='**/api/channels/*/messages';
+  await page.route(pattern,async route=>{if(route.request().method()!=='POST')return route.continue();firstNonce=route.request().postDataJSON().nonce;received();await gate;await route.fulfill({status:503,contentType:'application/json',body:JSON.stringify({error:{code:'OFFLINE',message:'Late simulated failure'}})});});
+  await input.fill('restore after returning');await input.press('Enter');await waiting;
+  await page.getByRole('button',{name:'Личные сообщения',exact:true}).click();await input.waitFor({state:'detached'});
+  await page.getByRole('button',{name:'Demo Server',exact:true}).click();await input.waitFor();assert.equal(await input.inputValue(),'');release();
+  await page.waitForFunction(()=>document.querySelector('textarea[aria-label="Написать в #general"]')?.value==='restore after returning');
+  await page.unroute(pattern);let retryNonce;
+  await page.route(pattern,async route=>{if(route.request().method()==='POST')retryNonce=route.request().postDataJSON().nonce;return route.continue();});
+  const sent=page.waitForResponse(response=>response.request().method()==='POST'&&/\/channels\/[^/]+\/messages$/.test(response.url()));
+  await input.press('Enter');assert.equal((await sent).status(),201);assert.equal(retryNonce,firstNonce);
+  result.checks.push('late send failure reaches the reopened editor and its retry retains the original nonce');await context.close();
+ }
+ {
   const {context,page}=await session();
   await upload(page);assert.equal(await page.evaluate(()=>window.__blobs.size),1);
   await page.getByRole('button',{name:'Убрать файл',exact:true}).click();

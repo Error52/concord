@@ -1,8 +1,8 @@
 import { cleanupOrphans } from './services/attachmentService.js';
 import { execute, query } from './db/pool.js';
 import { redis } from './redis.js';
-import { listParticipants,listRooms } from './webrtc/livekit.js';
-import { markLeft,acceptParticipant } from './services/voiceService.js';
+import { listParticipants,listRooms, type LkParticipant } from './webrtc/livekit.js';
+import { leaveClient,acceptParticipant } from './services/voiceService.js';
 import { log } from './logger.js';
 import { deliverPendingMail } from './services/mailOutbox.js';
 
@@ -35,15 +35,16 @@ export async function reconcileVoice(): Promise<void> {
   const rooms=await listRooms();
   for (const key of new Set([...keys,...rooms.filter(r=>/^ch_[0-9a-f-]{36}$/.test(r)).map(r=>`voice:room:${r.slice(3)}`)])) {
     const channelId = key.slice('voice:room:'.length);
-    let identities: Set<string>;
+    let participants:LkParticipant[];
     try {
-      identities = new Set((await listParticipants(`ch_${channelId}`)).map((p) => p.identity));
+      participants=await listParticipants(`ch_${channelId}`);
     } catch {
       return; // SFU unreachable: do not wipe state on a transient failure
     }
+    const identities=new Set(participants.map(p=>p.identity));
     const tracked = await redis.smembers(key);
-    for (const userId of tracked) if (!identities.has(userId)) await markLeft(userId, channelId);
-    for (const userId of identities) await acceptParticipant(userId, channelId);
+    for (const userId of tracked) if (!identities.has(userId)) await leaveClient(userId, channelId);
+    for (const participant of participants) await acceptParticipant(participant.identity, channelId,{participantSid:participant.sid,metadata:participant.metadata});
   }
 }
 

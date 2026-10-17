@@ -19,6 +19,9 @@ export const MAX_CONTENT = 4000;
 const URL_RE = /\bhttps?:\/\/[^\s<>]+/i;
 const MENTION_RE = /<@([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})>/gi;
 
+interface ReadStateRow {user_id:string;channel_id:string;last_read_id:string;mention_count:number;revision:string}
+const readStateDto=(r:ReadStateRow)=>({channelId:r.channel_id,lastReadId:r.last_read_id,mentionCount:r.mention_count,revision:r.revision});
+
 export function targetOf(ca: ChannelAccess): Target {
   return ca.channel.server_id ? { server: ca.channel.server_id } : { users: ca.dmPeers };
 }
@@ -108,7 +111,7 @@ export async function create(channelId: string, userId: string, input: CreateInp
   const embeds = input.gif ? [input.gif] : [];
   const reservation = randomUUID();
   let slowmodeKey: string | null = null;
-  let result: {row: MessageRow; created: boolean};
+  let result: {row: MessageRow; created: boolean;readStates:ReadStateRow[]};
   try {
   result = await tx(async (db) => {
     if (input.nonce) {
@@ -117,7 +120,7 @@ export async function create(channelId: string, userId: string, input: CreateInp
         `SELECT id,request_hash FROM messages WHERE author_id=$1 AND channel_id=$2 AND client_nonce=$3`,[userId,channelId,input.nonce],db);
       if (existing) {
         if(existing.request_hash!==requestHash)throw Errors.conflict('NONCE_CONFLICT','Этот запрос уже использован для другого сообщения');
-        return {row:(await findMessageTx(existing.id,db))!,created:false};
+        return {row:(await findMessageTx(existing.id,db))!,created:false,readStates:[]};
       }
     }
     if(input.replyToId){
@@ -160,26 +163,29 @@ export async function create(channelId: string, userId: string, input: CreateInp
     const id = msg!.id;
     if (attachmentIds.length) await execute(`UPDATE attachments SET message_id = $1 WHERE id = ANY($2::uuid[])`, [id, attachmentIds], db);
     await execute(`UPDATE channels SET last_message_id = GREATEST(last_message_id,$2::bigint) WHERE id = $1`, [channelId, id], db);
-    await execute(
-      `INSERT INTO read_states (user_id, channel_id, last_read_id, mention_count) VALUES ($1, $2, $3, 0)
+    const authorRead=await queryOne<ReadStateRow>(
+      `INSERT INTO read_states (user_id, channel_id, last_read_id, mention_count,revision) VALUES ($1, $2, $3, 0,1)
        ON CONFLICT (user_id, channel_id) DO UPDATE SET last_read_id = GREATEST(read_states.last_read_id,EXCLUDED.last_read_id),
-         mention_count = CASE WHEN EXCLUDED.last_read_id >= read_states.last_read_id THEN 0 ELSE read_states.mention_count END`,
+         mention_count = CASE WHEN EXCLUDED.last_read_id >= read_states.last_read_id THEN 0 ELSE read_states.mention_count END,
+         revision=read_states.revision+1 RETURNING user_id,channel_id,last_read_id,mention_count,revision`,
       [userId, channelId, id],
       db,
     );
+    const updatedReads=[authorRead!];
     if (mentionedUsers.length) {
-      await execute(
-        `INSERT INTO read_states (user_id, channel_id, mention_count) SELECT unnest($1::uuid[]), $2, 1
-         ON CONFLICT (user_id, channel_id) DO UPDATE SET mention_count = read_states.mention_count + 1`,
-        [mentionedUsers, channelId],
+      updatedReads.push(...await query<ReadStateRow>(
+        `INSERT INTO read_states (user_id, channel_id, mention_count,revision) SELECT unnest($1::uuid[]), $2, 1,1
+         ON CONFLICT (user_id, channel_id) DO UPDATE SET mention_count = read_states.mention_count + CASE WHEN read_states.last_read_id<$3::bigint THEN 1 ELSE 0 END,
+           revision=read_states.revision+1 RETURNING user_id,channel_id,last_read_id,mention_count,revision`,
+        [mentionedUsers, channelId,id],
         db,
-      );
+      ));
     }
     if (!ca.channel.server_id) {
       // Re-show a DM that the other side had closed.
       await execute(`UPDATE channel_members SET hidden = false WHERE channel_id = $1 AND hidden`, [channelId], db);
     }
-    return {row:(await findMessageTx(id, db))!,created:true};
+    return {row:(await findMessageTx(id, db))!,created:true,readStates:updatedReads};
   });
   } catch(err) {
     if(slowmodeKey)await redis.eval(`if redis.call('GET',KEYS[1])==ARGV[1] then return redis.call('DEL',KEYS[1]) end return 0`,1,slowmodeKey,reservation)
@@ -192,6 +198,8 @@ export async function create(channelId: string, userId: string, input: CreateInp
   if(result.created){
     // Delivery failures cannot turn an already committed send into an HTTP failure.
     await emit(Ev.MessageNew, payload, targetOf(ca)).catch(err=>log.warn('message broadcast failed',{err,messageId:payload.id}));
+    await Promise.all(result.readStates.map(row=>emit(Ev.ReadState,readStateDto(row),{users:[row.user_id]})))
+      .catch(err=>log.warn('message read state broadcast failed',{err,messageId:payload.id}));
     await fanOutNotifications(ca, userId, dto!, mentionIds, mentionsEveryone).catch(err=>log.warn('message notifications failed',{err,messageId:payload.id}));
   }
   return payload;
@@ -218,14 +226,26 @@ async function fanOutNotifications(ca: ChannelAccess, authorId: string, msg: Mes
 export async function postSystem(channelId: string, actorId: string, content: string): Promise<void> {
   const ca = await requireChannel(channelId, actorId).catch(() => null);
   if (!ca) return;
-  const row = await queryOne<{ id: string }>(
-    `INSERT INTO messages (channel_id, author_id, content, kind) VALUES ($1, $2, $3, 'system') RETURNING id`,
-    [channelId, actorId, content],
-  );
-  await execute(`UPDATE channels SET last_message_id = GREATEST(last_message_id,$2::bigint) WHERE id = $1`, [channelId, row!.id]);
-  const full = await findMessage(row!.id);
+  const result = await tx(async db => {
+    const row = await queryOne<{ id: string }>(
+      `INSERT INTO messages (channel_id, author_id, content, kind) VALUES ($1, $2, $3, 'system') RETURNING id`,
+      [channelId, actorId, content], db,
+    );
+    await execute(`UPDATE channels SET last_message_id = GREATEST(last_message_id,$2::bigint) WHERE id = $1`, [channelId, row!.id], db);
+    const read = await queryOne<ReadStateRow>(
+      `INSERT INTO read_states (user_id,channel_id,last_read_id,mention_count,revision) VALUES ($1,$2,$3,0,1)
+       ON CONFLICT (user_id,channel_id) DO UPDATE SET last_read_id=GREATEST(read_states.last_read_id,EXCLUDED.last_read_id),
+         mention_count=CASE WHEN EXCLUDED.last_read_id>=read_states.last_read_id THEN 0 ELSE read_states.mention_count END,
+         revision=read_states.revision+1 RETURNING user_id,channel_id,last_read_id,mention_count,revision`,
+      [actorId, channelId, row!.id], db,
+    );
+    return {id: row!.id, read: read!};
+  });
+  const full = await findMessage(result.id);
+  if (!full) return;
   const [dto] = await hydrate([full!], actorId);
   await emit(Ev.MessageNew, dto, targetOf(ca));
+  await emit(Ev.ReadState, readStateDto(result.read), {users: [actorId]});
 }
 
 export async function edit(messageId: string, userId: string, content: string): Promise<MessageDTO> {
@@ -250,7 +270,8 @@ export async function remove(messageId: string, userId: string): Promise<void> {
   const own = msg.author_id === userId;
   if (!own && !canManage(ca, Perm.MANAGE_MESSAGES)) throw Errors.forbidden('Нет права удалять чужие сообщения');
   const keys = await query<{ storage_key: string; preview_key: string | null }>(`SELECT storage_key, preview_key FROM attachments WHERE message_id = $1`, [messageId]);
-  await execute(`DELETE FROM messages WHERE id = $1`, [messageId]);
+  const removed=await execute(`DELETE FROM messages WHERE id = $1`, [messageId]);
+  if(!removed)return;
   if (!own && ca.channel.server_id) {
     await audit(ca.channel.server_id, userId, AuditAction.MessageDelete, { type: 'user', id: msg.author_id ?? '' }, {
       channelId: msg.channel_id,
@@ -354,17 +375,18 @@ async function updateReadMarker(channelId:string,userId:string,messageId:string,
     if(marker<0n)marker=0n;if(marker>cap)marker=cap;
     const count=await queryOne<{n:number}>(`SELECT count(*)::int AS n FROM messages WHERE channel_id=$1 AND id>$3
       AND author_id IS DISTINCT FROM $2::uuid AND ($2::uuid=ANY(mention_ids) OR mentions_everyone)`,[channelId,userId,marker.toString()],db);
-    await execute(`UPDATE read_states SET last_read_id=$3,mention_count=$4 WHERE user_id=$1 AND channel_id=$2`,[userId,channelId,marker.toString(),count!.n],db);
-    return {channelId,lastReadId:marker.toString(),mentionCount:count!.n};
+    const updated=await queryOne<ReadStateRow>(`UPDATE read_states SET last_read_id=$3,mention_count=$4,revision=revision+1
+      WHERE user_id=$1 AND channel_id=$2 RETURNING user_id,channel_id,last_read_id,mention_count,revision`,[userId,channelId,marker.toString(),count!.n],db);
+    return readStateDto(updated!);
   });
 }
 
 export async function readStates(userId: string) {
-  const rows = await query<{ channel_id: string; last_read_id: string; mention_count: number }>(
-    `SELECT channel_id, last_read_id, mention_count FROM read_states WHERE user_id = $1`,
+  const rows = await query<ReadStateRow>(
+    `SELECT user_id,channel_id,last_read_id,mention_count,revision FROM read_states WHERE user_id = $1`,
     [userId],
   );
-  return rows.map((r) => ({ channelId: r.channel_id, lastReadId: r.last_read_id, mentionCount: r.mention_count }));
+  return rows.map(readStateDto);
 }
 
 // ─────────────── bookmarks ───────────────

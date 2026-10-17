@@ -17,6 +17,7 @@ import type {
   Message,
   Notification,
   ReadyPayload,
+  ReadState,
   Relation,
   Role,
   SelfUser,
@@ -52,7 +53,10 @@ function applyFullServer(s: AppState, full: FullServer): Partial<AppState> {
   const sid = full.server.id;
   const channels = { ...s.channels };
   for (const id of Object.keys(channels)) if (channels[id]!.serverId === sid) delete channels[id];
-  for (const ch of full.channels) channels[ch.id] = ch;
+  for (const ch of full.channels) {
+    const last=s.channels[ch.id]?.lastMessageId;
+    channels[ch.id] = last&&(!ch.lastMessageId||isNewer(last,ch.lastMessageId))?{...ch,lastMessageId:last}:ch;
+  }
   const voiceStates = { ...s.voiceStates };
   for (const [uid, vs] of Object.entries(voiceStates)) if (vs.serverId === sid) delete voiceStates[uid];
   for (const vs of full.voiceStates) voiceStates[vs.userId] = vs;
@@ -85,10 +89,24 @@ function removeServer(s: AppState, sid: string): Partial<AppState> {
 
 let serverSnapshotGeneration = 0;
 const serverRefreshes = new Map<string, number>();
+type ServerChange=(s:AppState)=>Partial<AppState>;
+const serverRefreshChanges=new Map<string,{request:number;changes:ServerChange[]}>();
+function changeServerState(serverId:string|null,change:ServerChange):void {
+  if(serverId)serverRefreshChanges.get(serverId)?.changes.push(change);
+  setState(change);
+}
+function changeSharedServerState(change:ServerChange):void {
+  for(const pending of serverRefreshChanges.values())pending.changes.push(change);
+  setState(change);
+}
 
 function onReady(d: ReadyPayload): void {
   ++serverSnapshotGeneration;
   serverRefreshes.clear();
+  serverRefreshChanges.clear();
+  for(const timer of typingTimers.values())clearTimeout(timer);
+  typingTimers.clear();
+  readInFlight.clear();
   ++notificationGeneration;
   notificationSnapshotRevision=d.notifications.revision??'0';
   notificationRevision=notificationSnapshotRevision;
@@ -109,7 +127,12 @@ function onReady(d: ReadyPayload): void {
       servers: {},
       serverOrder: [],
       channels: {},
+      roles: {},
+      members: {},
+      permissions: {},
       voiceStates: {},
+      typing: {},
+      speaking: {},
       // Message caches may have missed events while disconnected: drop them, they reload on view.
       messages: {},
       users: mergeUsers(s, [d.user, ...d.dms.flatMap((x) => x.recipients), ...d.relationships.map((r) => r.user)]),
@@ -158,8 +181,9 @@ function onMessageNew(m: Message): void {
   setState((st) => {
     const ch = st.channels[m.channelId];
     const previousRead=st.readStates[m.channelId];
-    const readStates = mine && (!previousRead || isNewer(m.id,previousRead.lastReadId)) ? { ...st.readStates, [m.channelId]: { channelId: m.channelId, lastReadId: m.id, mentionCount: 0 } } : st.readStates;
-    const mentioned = !duplicate && !mine && isNewer(m.id,previousRead?.lastReadId??'0') && (m.mentionIds.includes(st.me?.id ?? '') || m.mentionsEveryone);
+    const authoritative=previousRead?.revision!==undefined;
+    const readStates = !authoritative && mine && (!previousRead || isNewer(m.id,previousRead.lastReadId)) ? { ...st.readStates, [m.channelId]: { channelId: m.channelId, lastReadId: m.id, mentionCount: 0 } } : st.readStates;
+    const mentioned = !authoritative && !duplicate && !mine && isNewer(m.id,previousRead?.lastReadId??'0') && (m.mentionIds.includes(st.me?.id ?? '') || m.mentionsEveryone);
     const rs = readStates[m.channelId];
     const nextRead = mentioned ? { ...readStates, [m.channelId]: { channelId: m.channelId, lastReadId: rs?.lastReadId ?? '0', mentionCount: (rs?.mentionCount ?? 0) + 1 } } : readStates;
     const lastMessageId=ch?.lastMessageId&&isNewer(ch.lastMessageId,m.id)?ch.lastMessageId:m.id;
@@ -295,7 +319,7 @@ export function notificationTitle(n: Notification): string {
 }
 
 function patchUser(u: User): void {
-  setState((s) => {
+  changeSharedServerState((s) => {
     const next: Partial<AppState> = { users: { ...s.users, [u.id]: { ...s.users[u.id], ...u } } };
     if (s.me?.id === u.id) next.me = { ...s.me, ...u } as SelfUser;
     return next;
@@ -329,11 +353,15 @@ gateway.on('typing:start', (d: { channelId: string; userId: string; username: st
     }, 8000),
   );
 });
-gateway.on('read:update', (d: { channelId: string; lastReadId: string; mentionCount: number }) =>
-  setState((s) => ({ readStates: { ...s.readStates, [d.channelId]: { channelId: d.channelId, lastReadId: d.lastReadId, mentionCount: d.mentionCount } } })),
+gateway.on('read:update', (d: ReadState) =>
+  setState((s) => {
+    const previous=s.readStates[d.channelId];
+    if(previous?.revision!==undefined&&(!d.revision||cmpId(d.revision,previous.revision)<=0))return {};
+    return {readStates:{...s.readStates,[d.channelId]:d}};
+  }),
 );
 gateway.on('presence:update', (d: { userId: string; status: User['status'] }) =>
-  setState((s) => {
+  changeSharedServerState((s) => {
     const u = s.users[d.userId];
     const next: Partial<AppState> = u ? { users: { ...s.users, [d.userId]: { ...u, status: d.status } } } : {};
     if (s.me?.id === d.userId) next.me = { ...s.me, status: d.status };
@@ -344,16 +372,16 @@ gateway.on('user:update', (u: User) => patchUser(u));
 gateway.on('friend:update', (list: Relation[]) => setState((s) => ({ relationships: indexBy(list, (r) => r.id), users: mergeUsers(s, list.map((r) => r.user)) })));
 gateway.on('dm:create', onDmCreate);
 gateway.on('notification:new', onNotification);
-gateway.on('server:create', (full: FullServer) => setState((s) => applyFullServer(s, full)));
-gateway.on('server:update', (srv: Server) => setState((s) => ({ servers: { ...s.servers, [srv.id]: srv } })));
+gateway.on('server:create', (full: FullServer) => changeServerState(full.server.id,(s) => applyFullServer(s, full)));
+gateway.on('server:update', (srv: Server) => changeServerState(srv.id,(s) => ({ servers: { ...s.servers, [srv.id]: srv } })));
 gateway.on('server:delete', (d: { id: string }) => leaveServerLocal(d.id, 'Сервер удалён'));
 gateway.on('server:removed', (d: { id: string; reason: string }) =>
   leaveServerLocal(d.id, d.reason === 'kick' ? 'Вас исключили с сервера' : d.reason === 'ban' ? 'Вас заблокировали на сервере' : null),
 );
-gateway.on('channel:create', (ch: Channel) => setState((s) => ({ channels: { ...s.channels, [ch.id]: ch } })));
-gateway.on('channel:update', (ch: Channel) => setState((s) => ({ channels: { ...s.channels, [ch.id]: { ...ch, lastMessageId: s.channels[ch.id]?.lastMessageId ?? ch.lastMessageId } } })));
+gateway.on('channel:create', (ch: Channel) => changeServerState(ch.serverId,(s) => ({ channels: { ...s.channels, [ch.id]: ch } })));
+gateway.on('channel:update', (ch: Channel) => changeServerState(ch.serverId,(s) => ({ channels: { ...s.channels, [ch.id]: { ...ch, lastMessageId: s.channels[ch.id]?.lastMessageId ?? ch.lastMessageId } } })));
 gateway.on('channel:delete', (d: { id: string; serverId: string }) => {
-  setState((s) => {
+  changeServerState(d.serverId,(s) => {
     const { [d.id]: _, ...channels } = s.channels;
     return { channels };
   });
@@ -361,27 +389,27 @@ gateway.on('channel:delete', (d: { id: string; serverId: string }) => {
   if (r.name === 'channel' && r.channelId === d.id) navigate({ name: 'channel', serverId: d.serverId, channelId: null }, true);
 });
 const upsertMember = (m: Member) =>
-  setState((s) => ({ members: { ...s.members, [m.serverId]: { ...s.members[m.serverId], [m.user.id]: m } }, users: mergeUsers(s, [m.user]) }));
+  changeServerState(m.serverId,(s) => ({ members: { ...s.members, [m.serverId]: { ...s.members[m.serverId], [m.user.id]: m } }, users: mergeUsers(s, [m.user]) }));
 gateway.on('member:join', upsertMember);
 gateway.on('member:update', (m: Member) => {
   upsertMember(m);
   if (m.user.id === getState().me?.id) void refreshServer(m.serverId);
 });
 gateway.on('member:leave', (d: { serverId: string; userId: string }) =>
-  setState((s) => {
+  changeServerState(d.serverId,(s) => {
     const members = { ...s.members[d.serverId] };
     delete members[d.userId];
     return { members: { ...s.members, [d.serverId]: members } };
   }),
 );
 gateway.on('role:update', (d: { serverId: string; roles: Role[] }) => {
-  setState((s) => ({ roles: { ...s.roles, [d.serverId]: d.roles } }));
+  changeServerState(d.serverId,(s) => ({ roles: { ...s.roles, [d.serverId]: d.roles } }));
   void refreshServer(d.serverId); // my effective permissions may have changed
 });
-gateway.on('voice:join', (vs: VoiceState) => setState((s) => ({ voiceStates: { ...s.voiceStates, [vs.userId]: vs } })));
-gateway.on('voice:state', (vs: VoiceState) => setState((s) => ({ voiceStates: { ...s.voiceStates, [vs.userId]: vs } })));
+gateway.on('voice:join', (vs: VoiceState) => changeSharedServerState((s) => ({ voiceStates: { ...s.voiceStates, [vs.userId]: vs } })));
+gateway.on('voice:state', (vs: VoiceState) => changeSharedServerState((s) => ({ voiceStates: { ...s.voiceStates, [vs.userId]: vs } })));
 gateway.on('voice:leave', (d: { userId: string; channelId: string }) =>
-  setState((s) => {
+  changeSharedServerState((s) => {
     if (s.voiceStates[d.userId]?.channelId !== d.channelId) return {};
     const { [d.userId]: _, ...voiceStates } = s.voiceStates;
     const { [d.userId]: _sp, ...speaking } = s.speaking;
@@ -414,6 +442,7 @@ export function dismissCall(channelId: string,ringId?:string): void {
 
 function leaveServerLocal(serverId: string, message: string | null): void {
   serverRefreshes.set(serverId, (serverRefreshes.get(serverId) ?? 0) + 1);
+  serverRefreshChanges.delete(serverId);
   setState((s) => removeServer(s, serverId));
   if (message) toast(message, 'info');
   const r = routerStore.get().route;
@@ -423,13 +452,21 @@ function leaveServerLocal(serverId: string, message: string | null): void {
 export async function refreshServer(serverId: string): Promise<void> {
   const request = (serverRefreshes.get(serverId) ?? 0) + 1;
   serverRefreshes.set(serverId, request);
+  const pending={request,changes:[] as ServerChange[]};
+  serverRefreshChanges.set(serverId,pending);
   const snapshot = serverSnapshotGeneration, userId = getState().me?.id;
   try {
     const full = await api.get<FullServer>(`/servers/${serverId}`);
     if (serverRefreshes.get(serverId) !== request || snapshot !== serverSnapshotGeneration || getState().me?.id !== userId) return;
-    setState((s) => applyFullServer(s, full));
+    setState((s) => {
+      let next={...s,...applyFullServer(s,full)};
+      for(const change of pending.changes)next={...next,...change(next)};
+      return next;
+    });
   } catch {
     /* removed or offline */
+  } finally {
+    if(serverRefreshChanges.get(serverId)===pending)serverRefreshChanges.delete(serverId);
   }
 }
 
@@ -485,6 +522,7 @@ export async function logout(): Promise<void> {
 async function logoutLocal(message: string | null): Promise<void> {
   clearCallTimers();
   notificationRows.clear();notificationMutations.clear();deliveredMessages.clear();
+  readInFlight.clear();
   gateway.stop();
   const { voice } = await import('../webrtc/voiceEngine');
   await voice.disconnect();
@@ -687,7 +725,7 @@ export async function markRead(channelId: string, messageId?: string): Promise<v
   const rs = s.readStates[channelId];
   if (rs && !isNewer(id, rs.lastReadId) && rs.mentionCount === 0) return;
   if (readInFlight.get(channelId)?.id === id) return;
-  const marker={channelId,lastReadId:rs&&isNewer(rs.lastReadId,id)?rs.lastReadId:id,mentionCount:0};
+  const marker={channelId,lastReadId:rs&&isNewer(rs.lastReadId,id)?rs.lastReadId:id,mentionCount:0,...(rs?.revision!==undefined?{revision:rs.revision}:{})};
   const pending={id,marker};readInFlight.set(channelId,pending);
   setState((st) => ({ readStates: { ...st.readStates, [channelId]: marker } }));
   try {

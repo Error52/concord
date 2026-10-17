@@ -29,7 +29,7 @@ export function verifyJwt<T extends JwtPayload = JwtPayload>(token: string, secr
   } catch {
     return null;
   }
-  if (header.alg !== 'HS256') return null;
+  if (!header || typeof header !== 'object' || Array.isArray(header) || header.alg !== 'HS256') return null;
   const expected = createHmac('sha256', secret).update(`${head}.${body}`).digest();
   const given = Buffer.from(sig, 'base64url');
   if (given.length !== expected.length || !timingSafeEqual(given, expected)) return null;
@@ -39,6 +39,9 @@ export function verifyJwt<T extends JwtPayload = JwtPayload>(token: string, secr
   } catch {
     return null;
   }
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return null;
+  if (payload.exp !== undefined && (typeof payload.exp !== 'number' || !Number.isFinite(payload.exp))) return null;
+  if (payload.nbf !== undefined && (typeof payload.nbf !== 'number' || !Number.isFinite(payload.nbf))) return null;
   const now = Math.floor(Date.now() / 1000);
   if (typeof payload.exp === 'number' && now >= payload.exp) return null;
   if (typeof payload.nbf === 'number' && now < payload.nbf) return null;

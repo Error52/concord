@@ -20,14 +20,17 @@ function useProfile(userId: string | undefined): ProfileView | null {
   const live = useApp((s) => (userId ? s.users[userId] : undefined));
   const rel = useApp((s) => (userId ? s.relationships[userId]?.type : undefined));
   useEffect(() => {
-    if (!userId) return;
+    let current=true;
     setData(null);
-    api.get<ProfileView>(`/users/${userId}`).then(setData, (err) => {
+    if (!userId) return;
+    api.get<ProfileView>(`/users/${userId}`).then(result=>{if(current)setData(result);}, (err) => {
+      if(!current)return;
       toast(errorMessage(err, 'Не удалось загрузить профиль'), 'error');
-      uiStore.set({ profile: null, fullProfile: null });
+      uiStore.set(s=>({profile:s.profile?.userId===userId?null:s.profile,fullProfile:s.fullProfile?.userId===userId?null:s.fullProfile}));
     });
+    return ()=>{current=false;};
   }, [userId, rel]);
-  if (!data) return null;
+  if (!data||data.user.id!==userId) return null;
   return live ? { ...data, user: { ...data.user, ...live, badges: live.badges ?? data.user.badges } } : data;
 }
 

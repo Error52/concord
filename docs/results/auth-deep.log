@@ -1,0 +1,22 @@
+✔ password-only login cannot pass an MFA setting enabled while its session was queued (434.0737ms)
+✔ malformed JWT JSON is rejected as authentication failure instead of a server error (16.7075ms)
+✔ MFA completion cannot issue a session after that authenticator was removed (165.1386ms)
+✔ MFA tickets are bound to their authenticator and expire after it is replaced (220.8593ms)
+✔ old setup cannot replace an already enabled authenticator (92.8495ms)
+✔ unverified signup cannot lock the email owner out with a preconfigured authenticator (223.8919ms)
+✔ password changes invalidate pending authenticator setup (210.6816ms)
+✔ stale disable cannot remove a replacement authenticator (142.2906ms)
+✔ password change in an already revoked family cannot modify credentials (258.8262ms)
+✔ password reset request and confirmation cannot deadlock on their user and token rows (175.1062ms)
+✔ revocation remains effective when Redis loses its session rejection keys (124.7776ms)
+✔ access claims require an existing owned session and reject malformed UUIDs without server errors (202.2195ms)
+{"t":"2026-10-16T17:14:09.811Z","level":"warn","msg":"refresh token reuse detected; revoking family","userId":"1b8f91eb-59f9-4f4f-a03f-40d4e6f3e30d"}
+✔ refresh reuse revokes descendants created by a concurrent rotation (157.4067ms)
+ℹ tests 13
+ℹ suites 0
+ℹ pass 13
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 3023.2661

@@ -53,6 +53,10 @@ function adminToken(room?: string): string {
   );
 }
 
+class LiveKitHttpError extends Error {
+  constructor(readonly status:number,message:string){super(message);}
+}
+
 async function twirp<T>(method: string, body: Record<string, unknown>, room?: string): Promise<T> {
   const url = `${config.LIVEKIT_URL.replace(/\/$/, '')}/twirp/livekit.RoomService/${method}`;
   const res = await fetch(url, {
@@ -63,7 +67,7 @@ async function twirp<T>(method: string, body: Record<string, unknown>, room?: st
   });
   if (!res.ok) {
     const text = await res.text().catch(() => '');
-    throw new Error(`LiveKit ${method} failed: ${res.status} ${text.slice(0, 200)}`);
+    throw new LiveKitHttpError(res.status,`LiveKit ${method} failed: ${res.status} ${text.slice(0, 200)}`);
   }
   return (await res.json()) as T;
 }
@@ -76,17 +80,30 @@ export interface LkTrack {
 }
 export interface LkParticipant {
   identity: string;
+  sid?: string;
+  metadata?: string;
   tracks?: LkTrack[];
 }
 
 export async function listParticipants(room: string): Promise<LkParticipant[]> {
-  const res = await twirp<{ participants?: LkParticipant[] }>('ListParticipants', { room }, room);
-  return res.participants ?? [];
+  try{
+    const res = await twirp<{ participants?: LkParticipant[] }>('ListParticipants', { room }, room);
+    return res.participants ?? [];
+  }catch(err){
+    // A finished room is authoritatively empty, unlike an unavailable SFU.
+    if(err instanceof LiveKitHttpError&&err.status===404)return [];
+    throw err;
+  }
 }
 
 export async function listRooms():Promise<string[]>{
-  const res=await twirp<{rooms?:{name:string}[]}>('ListRooms',{});
-  return (res.rooms??[]).map(r=>r.name);
+  return (await roomInstances()).map(r=>r.name);
+}
+
+/** Room names are reused after a full reconnect; the SID identifies the incarnation. */
+export async function roomInstances():Promise<{name:string;sid?:string}[]>{
+  const res=await twirp<{rooms?:{name:string;sid?:string}[]}>('ListRooms',{});
+  return res.rooms??[];
 }
 
 export async function removeParticipant(room: string, identity: string): Promise<void> {
@@ -139,7 +156,7 @@ export async function applyModeration(room: string, identity: string, opts: { se
 export interface WebhookEvent {
   event: string;
   room?: { name: string; sid?: string };
-  participant?: { identity: string; sid?: string; name?: string };
+  participant?: { identity: string; sid?: string; name?: string;metadata?:string };
   track?: { sid: string; source?: string | number; type?: string | number };
   createdAt?: string | number;
   id?: string;
