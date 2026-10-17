@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {execFileSync} from 'node:child_process';
 import {randomUUID} from 'node:crypto';
 import {fileURLToPath} from 'node:url';
+import {createTestNetwork} from './docker-network.mjs';
 const run=(...args)=>execFileSync('docker',args,{encoding:'utf8',stdio:['ignore','pipe','pipe']}).trim();
 const available=(()=>{try{run('compose','version');return true;}catch{return false;}})();
 test('pinned coturn starts with the exact Compose command',{skip:available?false:'Docker Compose is required',timeout:120000},async()=>{
@@ -10,7 +11,7 @@ test('pinned coturn starts with the exact Compose command',{skip:available?false
  try{
   const config=JSON.parse(run('compose','--env-file','.env.example','config','--format','json'));
   const turn=config.services.coturn;
-  run('network','create',network);
+  createTestNetwork(network,run);
   run('run','-d','--name',sfu,'--network',network,'--network-alias','livekit','node:24-bookworm-slim','node','-e','setInterval(()=>{},1000)');
   run('run','-d','--name',name,'--network',network,'--entrypoint','/bin/sh','-v',`${fileURLToPath(new URL('../deploy/start-turn.sh',import.meta.url))}:/etc/concord/start-turn.sh:ro`,turn.image,'/etc/concord/start-turn.sh',...turn.command);
   await new Promise(resolve=>setTimeout(resolve,2500));

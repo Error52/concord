@@ -2,6 +2,7 @@ import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {execFileSync} from 'node:child_process';
 import {randomUUID} from 'node:crypto';
+import {createTestNetwork} from './docker-network.mjs';
 const docker=(...args)=>execFileSync('docker',args,{encoding:'utf8',stdio:['ignore','pipe','pipe']}).trim();
 const available=(()=>{try{docker('info');return true;}catch{return false;}})();
 const delay=ms=>new Promise(r=>setTimeout(r,ms));
@@ -10,7 +11,7 @@ test('nginx preserves security headers, LiveKit paths and discovers recreated ba
  const stub=`require('http').createServer((q,s)=>{s.setHeader('Content-Type','application/json');s.end(JSON.stringify({service:process.env.SERVICE,url:q.url}));}).listen(Number(process.env.PORT),'0.0.0.0')`;
  const runStub=(name,alias,port,label,ip)=>docker('run','-d','--name',name,'--network',network,'--network-alias',alias,...(ip?['--ip',ip]:[]),'-e',`PORT=${port}`,'-e',`SERVICE=${label}`,'node:24-bookworm-slim','node','-e',stub);
  try{
-  docker('network','create',network);runStub(backend,'backend',4000,'before');runStub(livekit,'livekit',7880,'livekit');
+  createTestNetwork(network,docker);runStub(backend,'backend',4000,'before');runStub(livekit,'livekit',7880,'livekit');
   docker('run','-d','--name',frontend,'--network',network,'-p','127.0.0.1::80',process.env.FRONTEND_IMAGE??'concord-frontend-ci');
   const port=JSON.parse(docker('inspect',frontend))[0].NetworkSettings.Ports['80/tcp'][0].HostPort,base=`http://127.0.0.1:${port}`;
   async function wait(path,predicate){let last;for(let i=0;i<50;i++){try{last=await fetch(base+path,{signal:AbortSignal.timeout(2000)});if(await predicate(last.clone()))return last;}catch{}await delay(300);}throw new Error('Proxy did not recover: '+path+' '+last?.status);}
