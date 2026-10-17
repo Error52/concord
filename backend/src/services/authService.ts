@@ -4,6 +4,7 @@ import { execute, query, queryOne, tx, type Queryable } from '../db/pool.js';
 import { Errors, AppError } from '../http/errors.js';
 import { signJwt, verifyJwt } from '../auth/jwt.js';
 import { getDummyHash, hashPassword, verifyPassword } from '../auth/password.js';
+import { lockUserSessions } from '../auth/sessionLock.js';
 import { generateTotpSecret, otpauthUrl, verifyTotp } from '../auth/totp.js';
 import * as users from '../repositories/userRepo.js';
 import { redis } from '../redis.js';
@@ -56,10 +57,6 @@ async function createSession(userId: string, client: ClientInfo, familyId: strin
   );
   const sessionId = row!.id;
   return { accessToken: await issueAccess(userId, sessionId, db), refreshToken: `${sessionId}.${secret}`, refreshMaxAgeSec: maxAge };
-}
-
-async function lockUserSessions(userId:string,db:Queryable):Promise<void> {
-  await queryOne(`SELECT pg_advisory_xact_lock(hashtextextended($1,72601))`,[userId],db);
 }
 
 async function revokeSessions(ids: string[]): Promise<void> {

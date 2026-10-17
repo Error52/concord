@@ -23,7 +23,7 @@ node scripts/dev.mjs up
 - [Быстрый запуск и тесты](QUICKSTART.md)
 - [Регистрация, почта и сессии](docs/REGISTRATION.md)
 - [LAN и сертификаты](docs/LAN.md)
-- [Последние исправления и результаты проверок](docs/VERIFICATION-DEEP-2026-10-17.md)
+- [Последние исправления и проверка регрессий](docs/VERIFICATION-REGRESSION-2026-10-17.md)
 - [Обновление, SMTP, PostgreSQL и тайм-ауты npm](docs/UPGRADING.md)
 - [Техническая передача](docs/HANDOFF.md)
 

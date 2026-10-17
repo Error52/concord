@@ -1,0 +1,10 @@
+✔ logout waits for checked media admission and then removes its committed presence (677.3403ms)
+✔ media admission waits for an in-flight logout and rejects the revoked family (343.8048ms)
+ℹ tests 2
+ℹ suites 0
+ℹ pass 2
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 1562.2833

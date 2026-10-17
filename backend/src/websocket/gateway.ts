@@ -68,7 +68,7 @@ const clientOp = z.discriminatedUnion('op', [
   z.object({ op: z.literal(Op.CallRing), d: z.object({ channelId: z.string().uuid(), video: z.boolean() }) }),
   z.object({ op: z.literal(Op.CallAccept), d: z.object({ channelId: z.string().uuid(),ringId:z.string().uuid().optional() }) }),
   z.object({ op: z.literal(Op.CallDecline), d: z.object({ channelId: z.string().uuid(),ringId:z.string().uuid().optional() }) }),
-  z.object({ op: z.literal(Op.CallEnd), d: z.object({ channelId: z.string().uuid(), durationSec: z.number().finite().min(0).max(604800).nullable().optional() }) }),
+  z.object({ op: z.literal(Op.CallEnd), d: z.object({ channelId: z.string().uuid(), durationSec: z.number().finite().min(0).max(604800).nullable().optional(),participantSid:z.string().min(1).max(128).optional() }) }),
   z.object({ op: z.literal(Op.SetStatus), d: z.object({ status: z.enum(['online', 'idle', 'dnd', 'invisible']) }) }),
 ]);
 
@@ -287,7 +287,7 @@ export class Gateway {
         await calls.decline(op.d.channelId, userId,op.d.ringId);
         break;
       case Op.CallEnd:
-        await calls.end(op.d.channelId, userId, op.d.durationSec ?? null);
+        await calls.end(op.d.channelId, userId, op.d.durationSec ?? null,op.d.participantSid);
         break;
       case Op.SetStatus:
         await setStatus(userId, op.d.status);
@@ -316,6 +316,15 @@ export class Gateway {
     conn.sessionId = user.sessionId;
     this.index(this.byUser, user.id, conn);
     this.index(this.bySession, user.sessionId, conn);
+
+    // Revocation can be published while the initial user lookup is awaiting I/O,
+    // before this socket is in bySession. Recheck after indexing so either this
+    // check or the revocation subscriber closes every revoked connection.
+    if (!await verifyAccessToken(token)) {
+      conn.ws.close(Close.SessionRevoked, 'session revoked');
+      return;
+    }
+    if (conn.ws.readyState !== WebSocket.OPEN) return;
 
     const serverIds = (await query<{ server_id: string }>(`SELECT server_id FROM server_members WHERE user_id = $1`, [user.id])).map((r) => r.server_id);
     for (const s of serverIds) this.subscribe(conn, s);

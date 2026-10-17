@@ -14,6 +14,8 @@ Legacy participants without a session binding are accepted only during the first
 
 See [the detailed verification report](VERIFICATION-DEEP-2026-10-17.md) for regression tests, media measurements and remaining limits.
 
+The follow-up regression update requires no additional migration. Deploy frontend/backend together: updated clients attach their participant SID to `call:end`, so a stale tab cannot cancel a newer call from the same account. Calls created without a bound SID retain the legacy API contract. Session admission now shares the user-session lock with logout/reset, and gateway authentication rechecks session validity after indexing the connection. See [the regression report](VERIFICATION-REGRESSION-2026-10-17.md).
+
 ## Concurrent sends, calls and notifications
 
 The latest update adds migrations `006_message_nonce.sql` (durable retry keys) and `007_notification_revision.sql` (notification revisions). Backend startup applies both automatically. Existing accounts, messages, attachments and sessions are retained. Deploy frontend/backend together and stop old backend replicas, which do not advance notification revisions. The new frontend also identifies each ringing call so stale tab actions cannot cancel a newer call. Results: [concurrency verification](VERIFICATION-CONCURRENCY-2026-10-16.md).

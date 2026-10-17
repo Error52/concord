@@ -23,6 +23,7 @@ interface Ring {
   callerId: string;
   video: boolean;
   startedAt: string;
+  participantSid?: string;
 }
 
 async function dmPeers(channelId: string, userId: string): Promise<string[]> {
@@ -42,10 +43,23 @@ export async function ring(channelId: string, userId: string, video: boolean): P
   if(await isBlocked(userId,peers))throw Errors.forbidden('Звонок недоступен');
   const ring: Ring = { id:randomUUID(), callerId: userId, video, startedAt: new Date().toISOString() };
   let created:boolean;
+  let afterPrevious:(()=>Promise<void>)|undefined;
   try{
     created=await tx(async db=>{
       await execute(`SELECT pg_advisory_xact_lock(hashtextextended($1,0))`,[`voice-room:${channelId}`],db);
+      const rawInstance=await redis.get(`voice:instance:${userId}`);
+      const instance=rawInstance?JSON.parse(rawInstance) as {channelId?:string;participantSid?:string}:null;
+      if(instance?.channelId===channelId&&instance.participantSid)ring.participantSid=instance.participantSid;
       if(await redis.set(ringKey(channelId), JSON.stringify(ring), 'EX', RING_TTL, 'NX')!=='OK')return false;
+      // A caller can retry after the signalling TTL while its SFU session remains
+      // open. Preserve that unanswered attempt before replacing its durable marker.
+      const previous=await queryOne<{call_ring_id:string|null;call_ring_caller_id:string|null;answered:boolean}>(
+        `SELECT call_ring_id,call_ring_caller_id,
+          (SELECT count(DISTINCT user_id) FROM voice_participants WHERE session_id=vs.id)>=2 AS answered
+          FROM voice_sessions vs WHERE channel_id=$1 AND ended_at IS NULL`,[channelId],db);
+      if(previous?.call_ring_id&&previous.call_ring_caller_id&&!previous.answered){
+        afterPrevious=await recordCallMessage(channelId,previous.call_ring_caller_id,'call:missed',db);
+      }
       // The UI announces its SFU join before ringing. Signalling-only API clients
       // retain their existing behaviour without creating a fictitious media session.
       await execute(`UPDATE voice_sessions SET call_ring_id=$2,call_ring_caller_id=$3
@@ -57,6 +71,7 @@ export async function ring(channelId: string, userId: string, video: boolean): P
     throw err;
   }
   if(!created)return;
+  await afterPrevious?.();
   const caller = await loadPublicUser(userId);
   const others = peers.filter((p) => p !== userId);
   await emit(Ev.CallIncoming, { id:ring.id, channelId, caller, video, timeoutSec: RING_TTL }, { users: others });
@@ -79,7 +94,8 @@ export async function accept(channelId: string, userId: string,ringId?:string): 
   const ring=await tx(async db=>{
     await execute(`SELECT pg_advisory_xact_lock(hashtextextended($1,0))`,[`voice-room:${channelId}`],db);
     const pending=await consumeRing(channelId,userId,ringId,true);if(!pending)return null;
-    await clearRingHistory(channelId,pending.id,db);
+    // Accepting the invitation precedes the actual SFU join. Keep the durable
+    // marker until departure so a failed media handshake still has call history.
     return pending;
   });
   if(!ring)return;
@@ -94,12 +110,14 @@ export async function decline(channelId: string, userId: string,ringId?:string):
 }
 
 /** Stops this caller's outstanding ring. Actual call history follows the last SFU departure. */
-export async function end(channelId: string, userId: string, _durationSec: number | null): Promise<void> {
+export async function end(channelId: string, userId: string, _durationSec: number | null,participantSid?:string): Promise<void> {
   const peers = await dmPeers(channelId, userId);
   // An old participant leaving must not cancel a new call started by the other side.
   const raw=await redis.get(ringKey(channelId));
   const pending=raw?JSON.parse(raw) as Ring:null;
   if(pending?.callerId!==userId)return;
+  // A previous tab from the same account must not cancel a newer media instance.
+  if(pending.participantSid&&pending.participantSid!==participantSid)return;
   const finished=await finishRing(channelId,userId,pending.id,false);if(!finished)return;
   const {ring,afterCommit}=finished;await afterCommit?.();
   await emit(Ev.CallEnded, { channelId, userId, ringId:ring.id, remaining:0 }, { users: peers });

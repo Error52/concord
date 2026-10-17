@@ -12,6 +12,7 @@ import { audit, AuditAction } from './auditService.js';
 import { log } from '../logger.js';
 import type { VoiceStateDTO } from '../models/dto.js';
 import { recordEndedCall } from './callService.js';
+import { lockUserSessions } from '../auth/sessionLock.js';
 
 /**
  * Voice occupancy lives in Redis (it is ephemeral and changes often):
@@ -130,6 +131,8 @@ export async function join(userId: string, channelId: string,sessionId?:string) 
 export async function markJoined(userId: string, channelId: string, instance?:Omit<ParticipantInstance,'channelId'>,verifyPresence=false): Promise<boolean> {
   let afterLeave:(()=>Promise<void>)|undefined;
   const joined=await tx(async db=>{
+  // Revoke either sees this committed presence or admission sees the revoked family.
+  await lockUserSessions(userId,db);
   await execute(`SELECT pg_advisory_xact_lock(hashtextextended($1,0))`,[`voice-state:${userId}`],db);
   // A delayed join for an old participant must not resurrect it or replace a newer room.
   if(instance?.participantSid||verifyPresence){

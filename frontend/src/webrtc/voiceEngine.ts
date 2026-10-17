@@ -268,7 +268,7 @@ class VoiceEngine {
     this.intentionalLeave = true;
     const seq = switching ? this.joinSeq : ++this.joinSeq;
     if (s.isDm && s.channelId && s.joinedAt) {
-      gateway.send('call:end', { channelId: s.channelId, durationSec: (Date.now() - s.joinedAt) / 1000 });
+      gateway.send('call:end', { channelId: s.channelId, durationSec: (Date.now() - s.joinedAt) / 1000,participantSid:this.room?.localParticipant.sid||undefined });
     }
     if (s.channelId) gateway.send('voice:state', { channelId: null,expectedChannelId:s.channelId,participantSid:this.room?.localParticipant.sid||undefined });
     await this.teardown();

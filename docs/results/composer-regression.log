@@ -1,0 +1,12 @@
+{
+  "checks": [
+    "reopening a channel restores the account draft",
+    "late send failure reaches the reopened editor and its retry retains the original nonce",
+    "two committed sends with lost replies retain their own nonce; retrying the first creates no duplicate",
+    "removed attachment releases its preview",
+    "failed send retains attachments and a newly typed draft; retry succeeds",
+    "leaving a channel aborts the pending upload and releases its preview",
+    "switching accounts does not expose the former account draft"
+  ],
+  "errors": []
+}

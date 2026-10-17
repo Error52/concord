@@ -45,6 +45,34 @@ try{
   result.checks.push('late send failure reaches the reopened editor and its retry retains the original nonce');await context.close();
  }
  {
+  const {context,page,input}=await session(),run=Date.now().toString(36),firstText=`uncertain first ${run}`,secondText=`uncertain second ${run}`;
+  const recorded=[],gates=[],arrivals=[];
+  for(let i=0;i<2;i++){
+   let release,received;gates.push({promise:new Promise(r=>release=r),release:()=>release()});arrivals.push({promise:new Promise(r=>received=r),received:()=>received()});
+  }
+  const pattern='**/api/channels/*/messages';
+  await page.route(pattern,async route=>{
+   if(route.request().method()!=='POST')return route.continue();
+   const index=recorded.length;
+   if(index>=2)return route.continue();
+   const body=route.request().postDataJSON(),response=await route.fetch();assert.equal(response.status(),201);
+   recorded.push({body,message:await response.json(),url:route.request().url(),headers:route.request().headers()});
+   arrivals[index].received();await gates[index].promise;
+   return route.fulfill({status:503,contentType:'application/json',body:JSON.stringify({error:{code:'LOST_RESPONSE',message:`Lost response ${index+1}`}})});
+  });
+  await input.fill(firstText);await input.press('Enter');await arrivals[0].promise;
+  await input.fill(secondText);gates[0].release();await page.getByText('Lost response 1',{exact:true}).waitFor();
+  assert.equal(await input.inputValue(),secondText);await input.press('Enter');await arrivals[1].promise;gates[1].release();
+  await page.getByText('Lost response 2',{exact:true}).waitFor();await input.fill(firstText);
+  let retryNonce;await page.unroute(pattern);
+  await page.route(pattern,route=>{if(route.request().method()==='POST')retryNonce=route.request().postDataJSON().nonce;return route.continue();});
+  const retried=page.waitForResponse(r=>r.request().method()==='POST'&&r.url()===recorded[0].url);await input.press('Enter');const response=await retried;
+  assert.equal(response.status(),201);assert.equal(retryNonce,recorded[0].body.nonce);assert.equal((await response.json()).id,recorded[0].message.id);
+  const history=await context.request.get(recorded[0].url,{headers:{Authorization:recorded[0].headers.authorization}});assert.equal(history.status(),200);
+  const messages=await history.json();assert.equal(messages.filter(m=>m.content===firstText).length,1);assert.equal(messages.filter(m=>m.content===secondText).length,1);
+  result.checks.push('two committed sends with lost replies retain their own nonce; retrying the first creates no duplicate');await context.close();
+ }
+ {
   const {context,page}=await session();
   await upload(page);assert.equal(await page.evaluate(()=>window.__blobs.size),1);
   await page.getByRole('button',{name:'Убрать файл',exact:true}).click();
