@@ -163,8 +163,10 @@ try {
   await step('edit and delete own message', async () => {
     const box = A.page.getByRole('textbox', { name: 'Написать в #general' });
     await box.fill('опечатка');
+    const delivered=A.page.waitForResponse(response=>response.request().method()==='POST'&&/\/channels\/[^/]+\/messages$/.test(response.url()));
     await box.press('Enter');
-    const msg = A.page.locator('.msg', { hasText: 'опечатка' }).last();
+    const confirmed=await delivered;assert.equal(confirmed.status(),201);const saved=await confirmed.json();
+    const msg = A.page.locator(`.msg[data-message-id="${saved.id}"]`);
     await msg.hover();
     await msg.getByRole('button', { name: 'Редактировать' }).click();
     const edit = A.page.locator('.msg .composer textarea');
