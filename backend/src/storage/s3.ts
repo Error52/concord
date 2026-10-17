@@ -1,6 +1,7 @@
 import { createHash, createHmac } from 'node:crypto';
 import { Readable } from 'node:stream';
 import type { ObjectStorage, StoredObject } from './types.js';
+import {parseByteRange} from './range.js';
 
 /**
  * S3-compatible client (AWS Signature V4, path-style). Works with MinIO, AWS S3, Cloudflare R2, etc.
@@ -103,8 +104,23 @@ export class S3Storage implements ObjectStorage {
   }
 
   async get(key: string, range?: string): Promise<StoredObject | null> {
-    const res = await this.request('GET', this.url(key), undefined, range ? { range } : {});
+    const res = await this.request('GET', this.url(key), undefined, parseByteRange(range) ? { range:range! } : {});
     if (res.status === 404) return null;
+    if(res.status===416){
+      await res.body?.cancel();
+      let contentRange=res.headers.get('content-range')??undefined,contentType='application/octet-stream';
+      // Some S3-compatible providers omit Content-Range from their XML errors.
+      // Fetch object metadata rather than turning an ordinary seek rejection into 500.
+      if(!contentRange||!/^bytes \*\/\d+$/.test(contentRange)){
+        const head=await this.request('HEAD',this.url(key));await head.body?.cancel();
+        if(head.status===404)return null;
+        if(!head.ok)throw new Error(`S3 metadata failed: ${head.status}`);
+        const length=head.headers.get('content-length');
+        if(length===null||!/^\d+$/.test(length))throw new Error('S3 object length missing after range rejection');
+        contentRange=`bytes */${length}`;contentType=head.headers.get('content-type')??contentType;
+      }
+      return {stream:Readable.from([]),size:0,contentType,status:416,contentRange};
+    }
     if (!res.ok || !res.body) throw new Error(`S3 get failed: ${res.status}`);
     return {
       stream: Readable.fromWeb(res.body as import('node:stream/web').ReadableStream<Uint8Array>),

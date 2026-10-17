@@ -9,8 +9,15 @@ test('recovery accepts copied Unicode width, case and whitespace variants',()=>{
   assert.equal(normalizeRecoveryWord('ΟΣ RIVER PHRASE'),normalizeRecoveryWord('οσ river phrase'));
 });
 
-test('padding cannot bypass the recovery word length requirement',()=>{
-  assert.match(recoveryWordError('      tiny        ','tiny','password123')??'',/минимум 12/);
+test('seven normalized Cyrillic characters are rejected while eight are accepted',()=>{
+  assert.match(recoveryWordError('радужны','радужны','password123')??'',/минимум 8/);
+  assert.equal(recoveryWordError('Радужный',' радужный ','password123'),null);
+  assert.equal(recoveryWordError('радужныи\u0306','РАДУЖНЫЙ','password123'),null);
+});
+
+test('padding cannot bypass the eight-character normalized requirement',()=>{
+  assert.match(recoveryWordError('      tiny        ','tiny','password123')??'',/минимум 8/);
+  assert.match(recoveryWordError('  РАДУЖНЫ\t\n','радужны','password123')??'',/минимум 8/);
 });
 
 test('visually equivalent password reuse is rejected even when confirmation matches',()=>{

@@ -3,7 +3,9 @@ import { z } from 'zod';
 /** Shared request validation schemas. */
 
 export const uuid = z.string().uuid('Некорректный идентификатор');
-export const snowflake = z.string().regex(/^\d{1,19}$/, 'Некорректный идентификатор сообщения');
+export const snowflake = z.string().regex(/^\d{1,19}$/, 'Некорректный идентификатор сообщения')
+  .refine(value=>value.length<19||value<='9223372036854775807','Некорректный идентификатор сообщения');
+export const messageLimit = z.coerce.number().int().min(1).max(100);
 export const hexColor = z.string().regex(/^#[0-9a-fA-F]{6}$/, 'Цвет должен быть в формате #RRGGBB');
 
 export const username = z

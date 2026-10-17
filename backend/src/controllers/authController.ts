@@ -39,7 +39,7 @@ function userIdFromAccess(token: string): string {
 
 export function registerAuth(r: Router): void {
   const strict = { name: 'auth', max: 10, windowSec: 60 };
-  r.get('/auth/options',{auth:'none'},()=>({verificationMode:config.ACCOUNT_VERIFICATION_MODE,recoveryWordMinLength:12,recoveryWordMaxLength:256}));
+  r.get('/auth/options',{auth:'none'},()=>({verificationMode:config.ACCOUNT_VERIFICATION_MODE,recoveryWordMinLength:8,recoveryWordMaxLength:256}));
   r.post('/auth/recovery-word/reset',{auth:'none',csrf:true,rateLimit:{name:'recovery-word-ip',max:5,windowSec:900}},async ctx=>{
     const body=validate(z.object({identifier:z.string().trim().min(2).max(254),recoveryWord:S.recoveryWord,newPassword:S.password,newRecoveryWord:S.recoveryWord,totpCode:z.string().regex(/^\d{6}$/).optional()}),ctx.body);
     await auth.resetByRecoveryWord(body);return new Reply(200,{ok:true},{'Set-Cookie':clearCookies()});

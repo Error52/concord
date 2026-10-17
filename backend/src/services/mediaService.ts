@@ -94,8 +94,12 @@ export function assertExtensionMatches(filename: string, sniffed: Sniffed): void
 
 export function sanitizeFilename(name: string): string {
   const base = name.split(/[\\/]/).pop() ?? 'file';
-  const clean = base.replace(/[^\p{L}\p{N}._ -]/gu, '_').replace(/^\.+/, '').slice(0, 120);
-  return clean || 'file';
+  const clean = base.replace(/[^\p{L}\p{N}._ -]/gu, '_').replace(/^\.+/, '');
+  const points=[...clean];
+  if(points.length<=120)return clean||'file';
+  // Keep the extension used by content validation and never leave half a surrogate.
+  const suffix=/\.[a-z0-9]{1,8}$/i.exec(clean)?.[0]??'';
+  return points.slice(0,120-[...suffix].length).join('')+suffix;
 }
 
 export type MediaKind = 'avatar' | 'banner' | 'icon' | 'background' | 'badge' | 'server-banner';

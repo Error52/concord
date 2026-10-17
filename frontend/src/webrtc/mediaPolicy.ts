@@ -20,6 +20,16 @@ export function playbackBufferTarget(screen: boolean, jitterMs: number | null): 
   return Math.round(Math.min(160, Math.max(floor, Number.isFinite(jitterMs) ? (jitterMs ?? 0) * 2 + 20 : floor)));
 }
 
+/** Receiver reports are track scoped: one weak connection must not delay everyone else's audio. */
+export function playbackBufferFromReport(screen: boolean, kind: string, report: RTCStatsReport | undefined): number {
+  let jitterMs: number | null = null;
+  report?.forEach((row: { type: string; kind?: string; mediaType?: string; jitter?: number }) => {
+    if (row.type !== 'inbound-rtp' || (row.kind ?? row.mediaType) !== kind || typeof row.jitter !== 'number' || !Number.isFinite(row.jitter) || row.jitter < 0) return;
+    jitterMs = Math.max(jitterMs ?? 0, row.jitter * 1000);
+  });
+  return playbackBufferTarget(screen, jitterMs);
+}
+
 export function applyPlaybackBuffer(receiver: RTCRtpReceiver | undefined, target: number): boolean {
   if (!receiver || !('jitterBufferTarget' in receiver)) return false;
   try {

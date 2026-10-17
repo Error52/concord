@@ -221,11 +221,11 @@ function Register({config}:{config:AuthConfig}) {
           </div>
           {wordMode&&<>
             <div className="form-grid">
-              <label className="field"><span className="field-label">Секретное слово</span><input className={`input${errors.recoveryWord?' invalid':''}`} type="password" autoComplete="off" value={form.recoveryWord} onChange={set('recoveryWord')} minLength={config.options?.recoveryWordMinLength??12} maxLength={config.options?.recoveryWordMaxLength??256} required/></label>
-              <label className="field"><span className="field-label">Повторите секретное слово</span><input className="input" type="password" autoComplete="off" value={form.recoveryConfirm} onChange={set('recoveryConfirm')} maxLength={config.options?.recoveryWordMaxLength??256} required/></label>
+              <label className="field"><span className="field-label">Секретное слово</span><input className={`input${errors.recoveryWord?' invalid':''}`} type="password" autoComplete="off" value={form.recoveryWord} onChange={set('recoveryWord')} minLength={config.options?.recoveryWordMinLength??8} maxLength={config.options?.recoveryWordMaxLength??256} required/></label>
+              <label className="field"><span className="field-label">Повторите секретное слово</span><input className="input" type="password" autoComplete="off" value={form.recoveryConfirm} onChange={set('recoveryConfirm')} minLength={config.options?.recoveryWordMinLength??8} maxLength={config.options?.recoveryWordMaxLength??256} required/></label>
             </div>
             {err('recoveryWord')}
-            <p className="field-hint">Минимум 12 символов. Используйте слово или фразу, отличающиеся от пароля, и сохраните отдельно: они нужны для восстановления доступа. Регистр букв и лишние пробелы не учитываются.</p>
+            <p className="field-hint">Минимум {config.options?.recoveryWordMinLength??8} символов. Используйте слово или фразу, отличающиеся от пароля, и сохраните отдельно: они нужны для восстановления доступа. Регистр букв и лишние пробелы не учитываются.</p>
           </>}
           <div className="form-grid">
             <label className="field">
@@ -322,12 +322,12 @@ function Forgot({config}:{config:AuthConfig}) {
             <input className="input" type={wordMode?'text':'email'} autoComplete={wordMode?'username':'email'} value={email} onChange={(e) => setEmail(e.target.value)} required autoFocus disabled={busy}/>
           </label>
           {wordMode&&<>
-            <label className="field"><span className="field-label">Секретное слово</span><input className="input" type="password" autoComplete="off" maxLength={256} required value={recovery.word} onChange={setRecoveryField('word')} disabled={busy}/></label>
+            <label className="field"><span className="field-label">Секретное слово</span><input className="input" type="password" autoComplete="off" minLength={config.options.recoveryWordMinLength} maxLength={config.options.recoveryWordMaxLength} required value={recovery.word} onChange={setRecoveryField('word')} disabled={busy}/></label>
             <label className="field"><span className="field-label">Новый пароль</span><input className="input" type="password" autoComplete="new-password" minLength={8} maxLength={128} required value={recovery.password} onChange={setRecoveryField('password')} disabled={busy}/></label>
             <label className="field"><span className="field-label">Повторите пароль</span><input className="input" type="password" autoComplete="new-password" maxLength={128} required value={recovery.confirm} onChange={setRecoveryField('confirm')} disabled={busy}/></label>
             <label className="field"><span className="field-label">Новое секретное слово</span><input className="input" type="password" autoComplete="off" minLength={config.options.recoveryWordMinLength} maxLength={config.options.recoveryWordMaxLength} required value={recovery.nextWord} onChange={setRecoveryField('nextWord')} disabled={busy}/></label>
-            <label className="field"><span className="field-label">Повторите секретное слово</span><input className="input" type="password" autoComplete="off" maxLength={config.options.recoveryWordMaxLength} required value={recovery.repeat} onChange={setRecoveryField('repeat')} disabled={busy}/></label>
-            <p className="field-hint">Сохраните новое секретное слово отдельно от пароля. Прежнее слово больше не подойдёт. Минимум 12 символов; регистр букв и лишние пробелы не учитываются.</p>
+            <label className="field"><span className="field-label">Повторите секретное слово</span><input className="input" type="password" autoComplete="off" minLength={config.options.recoveryWordMinLength} maxLength={config.options.recoveryWordMaxLength} required value={recovery.repeat} onChange={setRecoveryField('repeat')} disabled={busy}/></label>
+            <p className="field-hint">Сохраните новое секретное слово отдельно от пароля. Прежнее слово больше не подойдёт. Минимум {config.options.recoveryWordMinLength} символов; регистр букв и лишние пробелы не учитываются.</p>
             <label className="field"><span className="field-label">Код 2FA, если включена</span><input className="input" inputMode="numeric" autoComplete="one-time-code" pattern="[0-9]{6}" maxLength={6} value={recovery.totp} onChange={e=>setRecovery(value=>({...value,totp:e.target.value.replace(/\D/g,'')}))} disabled={busy}/></label>
           </>}
           {error && <div className="field-error" role="alert">{error}</div>}

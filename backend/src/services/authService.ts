@@ -25,7 +25,7 @@ function requireEmailMode():void{if(config.ACCOUNT_VERIFICATION_MODE!=='email')t
 function requireWordMode():void{if(config.ACCOUNT_VERIFICATION_MODE!=='secret-word')throw Errors.notFound('Восстановление по ключевому слову');}
 function validatedRecoveryWord(word:string|undefined,password:string):string{
   const normalized=normalizeRecoveryWord(word??'');
-  if(normalized.length<12||normalized.length>256)throw new AppError(400,'RECOVERY_WORD_INVALID','Ключевое слово или фраза — от 12 до 256 символов');
+  if(normalized.length<8||normalized.length>256)throw new AppError(400,'RECOVERY_WORD_INVALID','Ключевое слово или фраза — от 8 до 256 символов');
   if(normalized===normalizeRecoveryWord(password))throw new AppError(400,'RECOVERY_WORD_EQUALS_PASSWORD','Ключевое слово должно отличаться от пароля');
   return normalized;
 }

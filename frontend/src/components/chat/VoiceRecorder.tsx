@@ -1,5 +1,5 @@
 import {useEffect,useRef,useState} from 'react';
-import {LuMic,LuSquare,LuX} from 'react-icons/lu';
+import {LuMic,LuSquare,LuX,LuLoaderCircle} from 'react-icons/lu';
 import {settingsStore} from '../../state/settings';
 import {toast} from '../../state/ui';
 import {VoiceRecording,type RecordingStatus} from '../../utils/voiceRecording';
@@ -17,7 +17,7 @@ export function VoiceRecorder({onFile,disabled}:{onFile:(file:File)=>void;disabl
   }}><LuMic/></button>;
   return <>
     {state.status==='recording'&&<><button className="icon-btn danger" aria-label="Завершить запись" onClick={()=>capture.current?.stop()}><LuSquare/></button><span className="muted" role="timer" aria-label="Длительность записи">{Math.floor(state.seconds/60)}:{String(state.seconds%60).padStart(2,'0')}</span></>}
-    {state.status==='stopping'&&<span className="muted" role="status">Обработка…</span>}
+    {state.status==='stopping'&&<span className="icon-btn muted" role="status" aria-label="Обработка записи" title="Обработка…"><LuLoaderCircle aria-hidden="true"/></span>}
     <button className="icon-btn" aria-label="Отменить запись" aria-busy={state.status==='requesting'} onClick={()=>capture.current?.cancel()}><LuX/></button>
   </>;
 }

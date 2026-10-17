@@ -1,7 +1,9 @@
 import { createReadStream } from 'node:fs';
 import { mkdir, rm, stat, writeFile, readFile } from 'node:fs/promises';
 import path from 'node:path';
+import {Readable} from 'node:stream';
 import type { ObjectStorage, StoredObject } from './types.js';
+import {parseByteRange} from './range.js';
 
 /** Filesystem storage (default; a Docker volume in compose). Keys are validated to prevent path traversal. */
 export class LocalStorage implements ObjectStorage {
@@ -38,10 +40,17 @@ export class LocalStorage implements ObjectStorage {
       return null;
     }
     const contentType = (await readFile(`${file}.type`, 'utf8').catch(() => '')) || 'application/octet-stream';
-    const m = range ? /^bytes=(\d*)-(\d*)$/.exec(range) : null;
-    if (m && (m[1] || m[2])) {
-      const start = m[1] ? Number(m[1]) : Math.max(0, size - Number(m[2]));
-      const end = m[1] && m[2] ? Math.min(Number(m[2]), size - 1) : size - 1;
+    const parsed = parseByteRange(range);
+    if (parsed) {
+      const total=BigInt(size),suffix='suffix' in parsed?parsed.suffix:null;
+      const first='first' in parsed?parsed.first:total-(suffix!>total?total:suffix!);
+      const requestedEnd='first' in parsed?(parsed.last??total-1n):total-1n;
+      const last=requestedEnd<total?requestedEnd:total-1n;
+      // A nonzero suffix is satisfiable even for an empty representation (RFC 9110
+      // 14.1.2). Ignore that empty range rather than inventing a 206 with end=-1.
+      if(!(size===0&&suffix!==null&&suffix>0n)&&
+        (suffix===0n||first>last||first>=total))return {stream:Readable.from([]),size:0,contentType,status:416,contentRange:`bytes */${size}`};
+      const start=Number(first),end=Number(last);
       if (start <= end && start < size) {
         return {
           stream: createReadStream(file, { start, end }),

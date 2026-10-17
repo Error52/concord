@@ -26,7 +26,7 @@ const fillRecovery=async(page,identifier,word,password,nextWord)=>{
 };
 
 try{
-  const A=await makePage(),page=A.page,name=`word${Date.now().toString(36)}`,password='uniquePassword123',firstWord='Amber   Orchid N42',nextWord='Silent comet return 73',nextPassword='changedPassword456',thirdWord='Willow northern river 93';
+  const A=await makePage(),page=A.page,name=`word${Date.now().toString(36)}`,password='uniquePassword123',firstWord='Радужный',nextWord='Северный',nextPassword='changedPassword456',thirdWord='Солнечно';
   let optionsCalls=0;
   await page.route('**/api/auth/options',route=>++optionsCalls===1?respond(route,503,'TEST_OPTIONS_BUSY','Временная ошибка настроек'):route.continue());
   await page.goto(`${BASE}/register`);await page.getByRole('alert').filter({hasText:'Временная ошибка настроек'}).waitFor();assert.equal(await page.getByRole('button',{name:'Продолжить',exact:true}).isDisabled(),true);
@@ -38,12 +38,13 @@ try{
   await page.getByLabel('Секретное слово',{exact:true}).fill(firstWord);await page.getByLabel('Повторите секретное слово',{exact:true}).fill(firstWord);
   let registrationCalls=0,allowRegistration=false;const arrived=deferred(),gate=deferred();releases.push(gate.resolve);
   await page.route('**/api/auth/register',async route=>{registrationCalls++;if(!allowRegistration)return respond(route,400,'TEST_UNEXPECTED_REQUEST','Неожиданная регистрация');arrived.resolve();await gate.promise;return route.continue();});
+  const wordInput=page.getByLabel('Секретное слово',{exact:true});assert.equal(await wordInput.getAttribute('minlength'),'8');await wordInput.fill('радужны');await page.getByLabel('Повторите секретное слово',{exact:true}).fill('радужны');await page.getByRole('button',{name:'Продолжить',exact:true}).click();assert.equal(await wordInput.evaluate(input=>input.checkValidity()),false);assert.equal(registrationCalls,0);await wordInput.fill(firstWord);await page.getByLabel('Повторите секретное слово',{exact:true}).fill(firstWord);check('signup rejects seven Cyrillic characters before accepting an eight-character word');
   await page.getByRole('button',{name:'Продолжить',exact:true}).click();await page.getByText('Пароли не совпадают',{exact:true}).waitFor();assert.equal(registrationCalls,0);check('signup rejects mismatched passwords before sending a request');
   await page.getByLabel('Повторите пароль',{exact:true}).fill(password);await page.getByLabel('Повторите секретное слово',{exact:true}).fill('another saved phrase 27');
   await page.getByRole('button',{name:'Продолжить',exact:true}).click();await page.getByText('Секретные слова не совпадают',{exact:true}).waitFor();assert.equal(registrationCalls,0);check('signup rejects a mismatched recovery confirmation');
   await page.getByLabel('Секретное слово',{exact:true}).fill(`  ${password.toUpperCase()}  `);await page.getByLabel('Повторите секретное слово',{exact:true}).fill(password);
   await page.getByRole('button',{name:'Продолжить',exact:true}).click();await page.getByText('Секретное слово должно отличаться от пароля',{exact:true}).waitFor();assert.equal(registrationCalls,0);check('signup rejects normalized password reuse as a recovery word');
-  await page.getByLabel('Секретное слово',{exact:true}).fill(firstWord);await page.getByLabel('Повторите секретное слово',{exact:true}).fill(' amber orchid n42 ');allowRegistration=true;
+  await page.getByLabel('Секретное слово',{exact:true}).fill(firstWord);await page.getByLabel('Повторите секретное слово',{exact:true}).fill(' РАДУЖНЫЙ ');allowRegistration=true;
   const registered=page.waitForResponse(r=>r.url().endsWith('/api/auth/register')&&r.request().method()==='POST');await page.getByRole('button',{name:'Продолжить',exact:true}).click();await arrived.promise;
   await page.locator('form.auth-card').evaluate(form=>{form.dispatchEvent(new Event('submit',{bubbles:true,cancelable:true}));form.dispatchEvent(new Event('submit',{bubbles:true,cancelable:true}));});assert.equal(registrationCalls,1);gate.resolve();
   const registeredResponse=await registered;assert.equal(registeredResponse.status(),201);const firstSession=await registeredResponse.json();
@@ -55,7 +56,7 @@ try{
   await fillRecovery(recovery.page,name,'incorrect recovery word',nextPassword,nextWord);
   const wrongResponse=recovery.page.waitForResponse(r=>r.url().endsWith('/api/auth/recovery-word/reset'));await recovery.page.getByRole('button',{name:'Восстановить доступ'}).click();const wrong=await wrongResponse;assert.equal(wrong.status(),400);const wrongBody=await wrong.json();
   await recovery.page.getByRole('alert').waitFor();assert.equal(await recovery.page.getByLabel('Новый пароль',{exact:true}).inputValue(),nextPassword);check('a wrong recovery word gives a retryable error without clearing the form');
-  await recovery.page.getByLabel('Секретное слово',{exact:true}).fill('  AMBER ORCHID N42 ');await recovery.page.getByRole('button',{name:'Восстановить доступ'}).click();await recovery.page.getByRole('heading',{name:'С возвращением!'}).waitFor();
+  await recovery.page.getByLabel('Секретное слово',{exact:true}).fill('  РАДУЖНЫЙ ');await recovery.page.getByRole('button',{name:'Восстановить доступ'}).click();await recovery.page.getByRole('heading',{name:'С возвращением!'}).waitFor();
   for(const session of [firstSession,secondSession]){const response=await A.context.request.get(`${BASE}/api/users/me`,{headers:authHeaders(session.accessToken)});assert.equal(response.status(),401,'Recovery revokes every earlier access session');}
   check('recovery rotates the password and word, revokes both sessions and requires a fresh login');
   const replay=await recovery.context.request.post(`${BASE}/api/auth/recovery-word/reset`,{headers:{'X-Requested-With':'concord'},data:{identifier:name,recoveryWord:firstWord,newPassword:'futurePassword789',newRecoveryWord:'future moonlight phrase 27'}});assert.equal(replay.status(),400);assert.deepEqual((await replay.json()).error,wrongBody.error);check('the previous recovery word cannot be replayed and returns the same generic failure');

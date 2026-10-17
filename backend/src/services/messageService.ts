@@ -36,9 +36,9 @@ export async function list(
   const sel = `SELECT ${MESSAGE_COLUMNS} FROM messages m JOIN channels c ON c.id = m.channel_id WHERE m.channel_id = $1`;
   let rows: MessageRow[];
   if (opts.around) {
-    const half = Math.floor(limit / 2);
-    const older = await query<MessageRow>(`${sel} AND m.id <= $2 ORDER BY m.id DESC LIMIT $3`, [channelId, opts.around, half + 1]);
-    const newer = await query<MessageRow>(`${sel} AND m.id > $2 ORDER BY m.id ASC LIMIT $3`, [channelId, opts.around, half]);
+    const olderCount = Math.ceil(limit / 2);
+    const older = await query<MessageRow>(`${sel} AND m.id <= $2 ORDER BY m.id DESC LIMIT $3`, [channelId, opts.around, olderCount]);
+    const newer = await query<MessageRow>(`${sel} AND m.id > $2 ORDER BY m.id ASC LIMIT $3`, [channelId, opts.around, limit - olderCount]);
     rows = [...older.reverse(), ...newer];
   } else if (opts.after) {
     rows = await query<MessageRow>(`${sel} AND m.id > $2 ORDER BY m.id ASC LIMIT $3`, [channelId, opts.after, limit]);

@@ -27,7 +27,7 @@ const code=(secret:string)=>hotp(base32Decode(secret),Math.floor(Date.now()/30_0
 
 test('word mode publishes only options and admits new users without claiming email ownership or sending mail',async()=>{
   const options=await new Client(h.base).get('/api/auth/options');assert.equal(options.status,200);
-  assert.deepEqual(options.body,{verificationMode:'secret-word',recoveryWordMinLength:12,recoveryWordMaxLength:256});
+  assert.deepEqual(options.body,{verificationMode:'secret-word',recoveryWordMinLength:8,recoveryWordMaxLength:256});
   const c=await signup('word_signup');
   assert.equal(c.user.accountReady,true);assert.equal(c.user.emailVerified,false);assert.equal(c.user.hasRecoveryWord,true);
   assert.equal(c.user.recoveryWordAllowed,true);assert.equal(c.user.emailVerificationRequired,false);assert.equal(c.user.demoMailbox,false);
@@ -45,6 +45,42 @@ test('signup rejects missing, short, oversized and password-equivalent words aft
     const r=await new Client(h.base).post('/api/auth/register',{username:`word_bad_${i}`,email:`word_bad_${i}@example.com`,password:i===3?'Password123456':'password123',recoveryWord});
     assert.equal(r.status,400);assert.ok(['RECOVERY_WORD_INVALID','RECOVERY_WORD_EQUALS_PASSWORD','VALIDATION'].includes(r.body.error.code));
   }
+});
+
+test('signup accepts eight normalized Cyrillic characters and rejects seven, including composed Unicode boundaries',async()=>{
+  for(const [name,recoveryWord,expected] of [
+    ['word_min_seven','крайний',400],['word_min_eight','радужный',201],
+    ['word_nfkc_seven','  КРАИ\u0306НИЙ  ',400],['word_nfkc_eight','  РАДУЖНЫИ\u0306  ',201],
+  ] as const){
+    const c=new Client(h.base),r=await c.post('/api/auth/register',{username:name,email:`${name}@example.com`,password:'password123',recoveryWord});
+    assert.equal(r.status,expected,name);
+    if(expected===400)assert.equal(r.body.error.code,'RECOVERY_WORD_INVALID');
+    else{
+      const stored=(await pool.query(`SELECT recovery_word_hash FROM users WHERE id=$1`,[r.body.user.id])).rows[0].recovery_word_hash;
+      assert.equal(await verifyPassword('радужный',stored),true);
+    }
+  }
+});
+
+test('authenticated changes accept eight normalized characters and refuse seven',async()=>{
+  const name='word_setup_boundary',c=await signup(name);
+  const short=await c.post('/api/auth/recovery-word',{currentPassword:'password123',oldRecoveryWord:word(name),recoveryWord:'краи\u0306ний'});
+  assert.equal(short.status,400);assert.equal(short.body.error.code,'RECOVERY_WORD_INVALID');
+  assert.equal((await c.post('/api/auth/recovery-word',{currentPassword:'password123',oldRecoveryWord:word(name),recoveryWord:' РАДУЖНЫИ\u0306 '})).status,200);
+  const stored=(await pool.query(`SELECT recovery_word_hash FROM users WHERE id=$1`,[c.user.id])).rows[0].recovery_word_hash;
+  assert.equal(await verifyPassword('радужный',stored),true);
+});
+
+test('recovery accepts an eight-character old word and rotates to a new eight-character word',async()=>{
+  const name='word_reset_boundary',c=new Client(h.base);
+  const signup=await c.post('/api/auth/register',{username:name,email:`${name}@example.com`,password:'password123',recoveryWord:'радужный'});
+  assert.equal(signup.status,201);
+  const short=await c.post('/api/auth/recovery-word/reset',reset(name,{recoveryWord:'  РАДУЖНЫИ\u0306 ',newRecoveryWord:'баскетб'}));
+  assert.equal(short.status,400);assert.equal(short.body.error.code,'RECOVERY_WORD_INVALID');
+  const valid=await c.post('/api/auth/recovery-word/reset',reset(name,{recoveryWord:' РАДУЖНЫИ\u0306 ',newRecoveryWord:'баскетбо'}));
+  assert.equal(valid.status,200);
+  const stored=(await pool.query(`SELECT recovery_word_hash FROM users WHERE id=$1`,[signup.body.user.id])).rows[0].recovery_word_hash;
+  assert.equal(await verifyPassword('баскетбо',stored),true);
 });
 
 test('username or email login stays compatible and normalization is stable',async()=>{

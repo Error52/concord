@@ -29,7 +29,7 @@ import { log } from '../utils/log';
 import { IS_LINUX, IS_MAC } from '../utils/platform';
 import { STREAM_QUALITIES, StreamLoadController, screenCodec, streamProfile, type StreamProfile } from './streamQuality';
 export { STREAM_QUALITIES } from './streamQuality';
-import { VOICE_AUDIO_PUBLISH, STREAM_AUDIO_PUBLISH, applyPlaybackBuffer, playbackBufferTarget } from './mediaPolicy';
+import { VOICE_AUDIO_PUBLISH, STREAM_AUDIO_PUBLISH, applyPlaybackBuffer, playbackBufferTarget, playbackBufferFromReport } from './mediaPolicy';
 
 /**
  * Voice/video engine on top of the LiveKit SFU.
@@ -706,7 +706,7 @@ class VoiceEngine {
         this.micStarting=null;
         // Permission restoration may arrive while the cancelled capture is still settling.
         const v=voiceStore.get();
-        if(this.room===room&&this.micSeq!==expectedSeq&&!this.micPub&&!v.serverMute&&!v.serverDeaf&&this.mayPublish(Track.Source.Microphone))void this.startMicrophone();
+        if(this.room===room&&this.micSeq!==expectedSeq&&!this.micPub&&!v.selfMute&&!v.selfDeaf&&!v.serverMute&&!v.serverDeaf&&this.mayPublish(Track.Source.Microphone))void this.startMicrophone();
       }
     }
   }
@@ -734,9 +734,12 @@ class VoiceEngine {
       this.micPub = publication;
       if (voiceStore.get().selfMute) await this.micPub.mute();
     } catch (err) {
-      if (this.room !== room) return;
+      if (this.room !== room||this.micSeq!==seq||this.dest?.stream.getAudioTracks()[0]!==track) return;
       log.warn('mic publish failed', { err: String(err) });
-      toast('Не удалось передать звук микрофона', 'error');
+      this.releaseMicrophone();
+      voiceStore.set({selfMute:true});
+      this.refreshParticipants();this.announce();
+      toast('Не удалось передать звук микрофона. Нажмите «Включить микрофон», чтобы повторить', 'error');
     }
   }
 
@@ -782,7 +785,8 @@ class VoiceEngine {
   private computeGate(): boolean {
     const v = voiceStore.get();
     const s = settingsStore.get();
-    if (v.selfMute || v.selfDeaf || v.serverMute || v.serverDeaf || this.mutedByBlur) return false;
+    if (v.selfMute || v.selfDeaf || v.serverMute || v.serverDeaf ||
+      (s.muteOnBlur&&(this.mutedByBlur||!document.hasFocus()))) return false;
     return s.inputMode === 'ptt' ? v.pttHeld : this.vad.isOpen;
   }
 
@@ -808,10 +812,8 @@ class VoiceEngine {
   }
 
   private onWindowFocus(): void {
-    if (this.mutedByBlur) {
-      this.mutedByBlur = false;
-      this.applyGate();
-    }
+    this.mutedByBlur = false;
+    this.applyGate();
   }
 
   private prevSettings = settingsStore.get();
@@ -819,6 +821,10 @@ class VoiceEngine {
     const p = this.prevSettings;
     this.prevSettings = s;
     if (this.inputGain) this.inputGain.gain.value = s.inputVolume;
+    if(p.muteOnBlur!==s.muteOnBlur){
+      this.mutedByBlur=s.muteOnBlur&&!document.hasFocus();
+      this.applyGate();
+    }
     if (!this.room) return;
     if (p.inputDeviceId !== s.inputDeviceId || p.noiseSuppression !== s.noiseSuppression || p.echoCancellation !== s.echoCancellation || p.autoGainControl !== s.autoGainControl) {
       // The published track comes from the WebAudio graph, so swapping the source needs no renegotiation.
@@ -966,7 +972,7 @@ class VoiceEngine {
   private unwatched = new Set<string>();
 
   private onTrackSubscribed(track: RemoteTrack, p: RemoteParticipant): void {
-    applyPlaybackBuffer(track.receiver, playbackBufferTarget(track.source === Track.Source.ScreenShare || track.source === Track.Source.ScreenShareAudio, voiceStore.get().stats?.jitterMs ?? null));
+    applyPlaybackBuffer(track.receiver, playbackBufferTarget(track.source === Track.Source.ScreenShare || track.source === Track.Source.ScreenShareAudio, null));
     if (track.kind === Track.Kind.Audio) {
       this.audioSink ??= Object.assign(document.createElement('div'), { hidden: true });
       if (!this.audioSink.isConnected) document.body.appendChild(this.audioSink);
@@ -1118,7 +1124,8 @@ class VoiceEngine {
         const prev = voiceStore.get().stats;
         if (prev?.iceState !== stats.iceState) log.info('webrtc ice state', { ice: stats.iceState, dtls: stats.dtlsState, transport: stats.transport });
         voiceStore.set({ stats });
-        for (const track of remote) applyPlaybackBuffer(track.receiver, playbackBufferTarget(track.source === Track.Source.ScreenShare || track.source === Track.Source.ScreenShareAudio, stats.jitterMs));
+        remote.forEach((track,index)=>applyPlaybackBuffer(track.receiver,playbackBufferFromReport(
+          track.source===Track.Source.ScreenShare||track.source===Track.Source.ScreenShareAudio,track.kind,sub[index])));
         const screenTrack = room.localParticipant.getTrackPublication(Track.Source.ScreenShare)?.track;
         const screenIndex = screenTrack ? local.indexOf(screenTrack) : -1;
         const screenReport = screenIndex >= 0 ? pub[screenIndex] : undefined;

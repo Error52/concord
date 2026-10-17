@@ -40,12 +40,12 @@ export function RecoveryWordForm({me,className='card col',onSaved}:{me:SelfUser;
     finally{pending.current=false;if(current())setBusy(false);}
   };
   return <form className={className} onSubmit={submit}>
-    <p className="field-hint">Сохраните секретное слово отдельно от пароля. Оно понадобится для восстановления доступа и не подтверждает владение email. Минимум 12 символов.</p>
+    <p className="field-hint">Сохраните секретное слово отдельно от пароля. Оно понадобится для восстановления доступа и не подтверждает владение email. Минимум 8 символов.</p>
     {!saved&&<>
       <label className="field"><span className="field-label">Текущий пароль</span><input className="input" type="password" autoComplete="current-password" maxLength={128} required value={password} onChange={e=>setPassword(e.target.value)} disabled={busy}/></label>
-      {me.hasRecoveryWord&&<label className="field"><span className="field-label">Текущее секретное слово</span><input className="input" type="password" autoComplete="off" maxLength={256} required value={oldWord} onChange={e=>setOldWord(e.target.value)} disabled={busy}/></label>}
-      <label className="field"><span className="field-label">Новое секретное слово</span><input className="input" type="password" autoComplete="off" minLength={12} maxLength={256} required value={word} onChange={e=>setWord(e.target.value)} disabled={busy}/></label>
-      <label className="field"><span className="field-label">Повторите секретное слово</span><input className="input" type="password" autoComplete="off" maxLength={256} required value={repeat} onChange={e=>setRepeat(e.target.value)} disabled={busy}/></label>
+      {me.hasRecoveryWord&&<label className="field"><span className="field-label">Текущее секретное слово</span><input className="input" type="password" autoComplete="off" minLength={8} maxLength={256} required value={oldWord} onChange={e=>setOldWord(e.target.value)} disabled={busy}/></label>}
+      <label className="field"><span className="field-label">Новое секретное слово</span><input className="input" type="password" autoComplete="off" minLength={8} maxLength={256} required value={word} onChange={e=>setWord(e.target.value)} disabled={busy}/></label>
+      <label className="field"><span className="field-label">Повторите секретное слово</span><input className="input" type="password" autoComplete="off" minLength={8} maxLength={256} required value={repeat} onChange={e=>setRepeat(e.target.value)} disabled={busy}/></label>
       {me.totpEnabled&&<label className="field"><span className="field-label">Код 2FA</span><input className="input" inputMode="numeric" autoComplete="one-time-code" pattern="[0-9]{6}" maxLength={6} required value={totp} onChange={e=>setTotp(e.target.value.replace(/\D/g,''))} disabled={busy}/></label>}
     </>}
     {saved&&<p className="field-hint" role="status">Секретное слово сохранено. Продолжите, чтобы обновить сеанс.</p>}

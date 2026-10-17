@@ -4,7 +4,7 @@ export interface StoredObject {
   stream: Readable;
   size: number;
   contentType: string;
-  /** 200 for full content, 206 for a satisfied Range request. */
+  /** 200 for full content, 206 for a satisfied range, 416 with an empty stream otherwise. */
   status: number;
   contentRange?: string;
 }

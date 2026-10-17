@@ -21,7 +21,7 @@ export function registerMessages(r: Router): void {
       before: ctx.query.get('before') ? validate(S.snowflake, ctx.query.get('before')) : undefined,
       after: ctx.query.get('after') ? validate(S.snowflake, ctx.query.get('after')) : undefined,
       around: ctx.query.get('around') ? validate(S.snowflake, ctx.query.get('around')) : undefined,
-      limit: ctx.query.get('limit') ? Number(ctx.query.get('limit')) : undefined,
+      limit: ctx.query.has('limit') ? validate(S.messageLimit,ctx.query.get('limit')) : undefined,
     }),
   );
 
@@ -117,7 +117,7 @@ export function registerMessages(r: Router): void {
   r.get('/dm/:id/messages', {}, async (ctx) =>
     messages.list(validate(S.uuid, ctx.params.id), ctx.user.id, {
       before: ctx.query.get('before') ? validate(S.snowflake, ctx.query.get('before')) : undefined,
-      limit: ctx.query.get('limit') ? Number(ctx.query.get('limit')) : undefined,
+      limit: ctx.query.has('limit') ? validate(S.messageLimit,ctx.query.get('limit')) : undefined,
     }),
   );
   r.post('/dm/:id/messages', { rateLimit: sendLimit }, async (ctx) => {
