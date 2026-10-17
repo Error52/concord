@@ -93,11 +93,12 @@ setting() { sed -n "s/^$1=//p" .env | tail -n 1; }
 TCP_MEDIA="$(setting LIVEKIT_TCP_PORT)"; TCP_MEDIA="${TCP_MEDIA:-7881}"
 UDP_MEDIA="$(setting LIVEKIT_UDP_PORT)"; UDP_MEDIA="${UDP_MEDIA:-7882}"
 HTTPS_BIND="$(setting HTTPS_PORT)"; HTTPS_BIND="${HTTPS_BIND:-8443}"
-for p in "$TCP_MEDIA" "$UDP_MEDIA" "$HTTPS_BIND"; do
+PUBLIC_HTTPS="$(setting PUBLIC_HTTPS_PORT)"; PUBLIC_HTTPS="${PUBLIC_HTTPS:-443}"
+for p in "$TCP_MEDIA" "$UDP_MEDIA" "$HTTPS_BIND" "$PUBLIC_HTTPS"; do
   case "$p" in ''|*[!0-9]*) die "Некорректный порт в .env" ;; esac
   [ "$p" -gt 0 ] && [ "$p" -lt 65536 ] || die "Порт должен быть от 1 до 65535"
 done
-if [ "$MODE" = server ] && [ "$(setting REQUIRE_EMAIL_VERIFICATION)" != false ] && [ "$(setting REQUIRE_EMAIL_VERIFICATION)" != 0 ]; then
+if [ "$MODE" = server ] && [ "$(setting REQUIRE_EMAIL_VERIFICATION)" != false ] && [ "$(setting REQUIRE_EMAIL_VERIFICATION)" != 0 ] && [ "$(setting DEMO_MAILBOX)" != true ] && [ "$(setting DEMO_MAILBOX)" != 1 ]; then
   SMTP="$(setting SMTP_HOST)"
   [ -n "$SMTP" ] && [ "$SMTP" != mailpit ] || die "Настройте SMTP_HOST, SMTP_PORT, MAIL_FROM и SMTP_TLS/SMTP_STARTTLS в .env, затем повторите установку. Для локальной демо-почты используйте --lan."
 fi
@@ -115,7 +116,7 @@ if [ -z "$(setting POSTGRES_IMAGE)" ]; then
 fi
 
 say "Firewall"
-PORTS_TCP="80 443 $TCP_MEDIA 3478"; PORTS_UDP="443 $UDP_MEDIA 3478"
+PORTS_TCP="80 $PUBLIC_HTTPS $TCP_MEDIA 3478"; PORTS_UDP="$PUBLIC_HTTPS $UDP_MEDIA 3478"
 [ "$MODE" = lan ] && PORTS_TCP="$HTTPS_BIND $TCP_MEDIA 3478" && PORTS_UDP="$UDP_MEDIA 3478"
 if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q "Status: active"; then
   ufw allow OpenSSH >/dev/null || true
@@ -148,14 +149,15 @@ CURL_OPTS="-fsS --max-time 5"
 [ "$MODE" = "lan" ] && CURL_OPTS="$CURL_OPTS -k"
 for _ in $(seq 1 60); do
   # shellcheck disable=SC2086
-  if curl $CURL_OPTS "$URL/api/health" >/dev/null 2>&1; then
+  if curl $CURL_OPTS "$URL/api/ready" >/dev/null 2>&1; then
     printf '\n  \033[32mConcord работает: %s\033[0m\n' "$URL"
     if [ "$MODE" = "lan" ]; then
       echo "  Откройте этот адрес на любом устройстве в вашей сети. Браузер предупредит о сертификате —"
       echo "  нажмите «Дополнительно → Перейти» (или установите сертификат: make trust-cert)."
       echo "  Демо-вход: alice@concord.local / demo12345"
     else
-      echo "  Зарегистрируйтесь первым, создайте сервер и отправьте друзьям ссылку-приглашение."
+      echo "  Зарегистрируйтесь, подтвердите почту, создайте сервер и отправьте друзьям приглашение."
+      echo "  Админку платформы выдайте своему аккаунту с сервера: make admin EMAIL=you@example.com"
     fi
     exit 0
   fi

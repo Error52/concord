@@ -87,7 +87,9 @@ export class Gateway {
   constructor(server: Server) {
     this.wss = new WebSocketServer({ noServer: true, maxPayload: 64 * 1024 });
     server.on('upgrade', (req, socket, head) => {
-      const url = new URL(req.url ?? '/', 'http://x');
+      let url:URL;
+      try {url=new URL(req.url ?? '/', 'http://x');}
+      catch {socket.end('HTTP/1.1 400 Bad Request\r\nConnection: close\r\nContent-Length: 0\r\n\r\n');return;}
       if (url.pathname !== '/gateway' && url.pathname !== '/api/gateway') return socket.destroy();
       if (!this.originAllowed(req)) {
         socket.write('HTTP/1.1 403 Forbidden\r\n\r\n');

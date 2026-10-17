@@ -90,10 +90,10 @@ export async function register(input: RegisterInput, client: ClientInfo, verifie
     // Serialize the first-admin decision across concurrent registrations.
     await queryOne(`SELECT pg_advisory_xact_lock(727275)`, [], db);
     const u = await queryOne<{ id: string }>(
-      // The first account bootstraps local administration; email allowlists require real verification later.
+      // Bootstrap is opt-in in production; public registration must not race the operator for admin.
       `INSERT INTO users (email, username, display_name, password_hash, is_platform_admin, email_verified_at)
-       VALUES ($1, $2, $3, $4, $5 OR NOT EXISTS (SELECT 1 FROM users), CASE WHEN $6 THEN now() END) RETURNING id`,
-      [input.email.trim().toLowerCase(), input.username.trim(), input.displayName?.trim() || null, passwordHash, false, verifiedSeed],
+       VALUES ($1, $2, $3, $4, $5 AND NOT EXISTS (SELECT 1 FROM users), CASE WHEN $6 THEN now() END) RETURNING id`,
+      [input.email.trim().toLowerCase(), input.username.trim(), input.displayName?.trim() || null, passwordHash, config.BOOTSTRAP_FIRST_ADMIN, verifiedSeed],
       db,
     );
     await execute(

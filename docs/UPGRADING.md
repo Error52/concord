@@ -2,6 +2,10 @@
 
 Keep `.env`, uploads and database volumes. Do not use `docker compose down -v` to update an installation.
 
+The public-readiness update needs no new SQL migration. In production, an absent `BOOTSTRAP_FIRST_ADMIN` now means `false`; existing admins are preserved. Assign your intended administrator with `make admin EMAIL=...`. Public visitors cannot claim the platform by registering first. `setup.sh` keeps the explicit first-account bootstrap for local/LAN demos.
+
+Deploy `deploy/start-turn.sh` together with the new Compose file. Keep `LIVEKIT_ADVERTISE_INTERNAL_IP=true` for Docker media: the TURN wrapper permits only the SFU's exact resolved bridge address, refreshes it after a container IP change, and retains the other private-network restrictions. This fixes same-host TURN hairpin failures. It does not enable TCP peer relaying. Optional public `PUBLIC_HTTPS_PORT` must match the port in `APP_URL`. See [HOSTING.md](HOSTING.md) for readiness and consistent backups.
+
 ## Sessions, voice history and read markers
 
 This update adds `008_voice_call_history.sql`, `009_read_state_revision.sql` and `010_call_ring_history.sql`. Backend startup applies them automatically. Deploy frontend/backend together and stop older backend replicas: every writer must advance read-state revisions and use the new call-history claim. Account data and uploads are retained. The durable ring marker preserves missed-call history after the ringing key expires in Redis; a solo visit without a call does not create a missed-call entry.

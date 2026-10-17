@@ -68,6 +68,7 @@ function PinsPopover({ channelId, anchor, onClose }: { channelId: string; anchor
             onClose();
             const r = getState().channels[m.channelId];
             if (r?.serverId) navigate({ name: 'channel', serverId: r.serverId, channelId: m.channelId, messageId: m.id });
+            else if(r?.type==='dm') navigate({name:'dm',channelId:m.channelId,messageId:m.id});
           }}
         >
           <div className="row" style={{ marginBottom: 4 }}>

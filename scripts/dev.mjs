@@ -23,7 +23,7 @@ async function lanConfig(){
  if(!ip||net.isIP(ip)!==4||!/^(192\.168\.|10\.|172\.(1[6-9]|2[0-9]|3[01])\.)/.test(ip))throw new Error('Use a private IPv4 address of this server: node scripts/dev.mjs lan <IP>');
  await init();
  const file=path.join(root,'.env'),old=await readFile(file,'utf8');
- const values={APP_URL:`https://${ip}:8443`,HTTPS_PORT:'8443',HTTP_BIND:'127.0.0.1',COOKIE_SECURE:'true',DEMO_MAILBOX:'true',COMPOSE_PROFILES:'https,dev',LIVEKIT_NODE_IP:ip,TURN_PUBLIC_HOST:ip,TURN_EXTERNAL_IP:ip};
+ const values={APP_URL:`https://${ip}:8443`,HTTPS_PORT:'8443',HTTP_BIND:'127.0.0.1',COOKIE_SECURE:'true',DEMO_MAILBOX:'true',BOOTSTRAP_FIRST_ADMIN:'true',COMPOSE_PROFILES:'https,dev',LIVEKIT_NODE_IP:ip,TURN_PUBLIC_HOST:ip,TURN_EXTERNAL_IP:ip};
  const seen=new Set();const lines=old.split(/\r?\n/).map(line=>{const key=line.match(/^([A-Z0-9_]+)=/)?.[1];if(key&&key in values){seen.add(key);return `${key}=${values[key]}`;}return line;});
  for(const [key,value] of Object.entries(values))if(!seen.has(key))lines.push(`${key}=${value}`);
  if(process.platform!=='win32')await chmod(file,0o600);

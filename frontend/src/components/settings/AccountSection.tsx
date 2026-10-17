@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { api, errorMessage } from '../../api/client';
 import { setState, useApp } from '../../state/app';
 import type { SelfUser } from '../../types';
@@ -87,6 +87,15 @@ export function SecuritySection() {
   const [setup, setSetup] = useState<{ secret: string; otpauthUrl: string } | null>(null);
   const [code, setCode] = useState('');
   const [disablePw, setDisablePw] = useState('');
+  const [busy,setBusy]=useState(false);
+  const performing=useRef(false);
+  const perform=async(action:()=>Promise<void>)=>{
+    if(performing.current)return;
+    performing.current=true;setBusy(true);
+    try{await action();}
+    catch(err){toast(errorMessage(err,'Не удалось изменить настройки безопасности'),'error');}
+    finally{performing.current=false;setBusy(false);}
+  };
   const load = () => void api.get<SessionRow[]>('/auth/sessions').then(setSessions, () => undefined);
   useEffect(load, []);
   if (!me) return null;
@@ -106,17 +115,14 @@ export function SecuritySection() {
             <button
               className="btn btn-danger"
               style={{ alignSelf: 'flex-start' }}
-              onClick={async () => {
-                try {
+              disabled={busy}
+              onClick={() => void perform(async () => {
                   await api.post('/auth/2fa/disable', { password: disablePw, code });
                   toast('2FA отключена', 'success');
                   setCode('');
                   setDisablePw('');
                   await refreshMe();
-                } catch (err) {
-                  toast(errorMessage(err), 'error');
-                }
-              }}
+              })}
             >
               Отключить 2FA
             </button>
@@ -137,18 +143,14 @@ export function SecuritySection() {
               <input className="input" style={{ maxWidth: 160 }} inputMode="numeric" maxLength={6} placeholder="123456" value={code} onChange={(e) => setCode(e.target.value.replace(/\D/g, ''))} />
               <button
                 className="btn btn-primary"
-                disabled={code.length !== 6}
-                onClick={async () => {
-                  try {
+                disabled={busy||code.length !== 6}
+                onClick={() => void perform(async () => {
                     await api.post('/auth/2fa/enable', { code });
                     toast('2FA включена', 'success');
                     setSetup(null);
                     setCode('');
                     await refreshMe();
-                  } catch (err) {
-                    toast(errorMessage(err), 'error');
-                  }
-                }}
+                })}
               >
                 Подтвердить
               </button>
@@ -157,7 +159,7 @@ export function SecuritySection() {
         ) : (
           <>
             <p style={{ margin: 0 }} className="muted">Защитите аккаунт одноразовыми кодами — даже утечка пароля не даст войти.</p>
-            <button className="btn btn-primary" style={{ alignSelf: 'flex-start' }} onClick={async () => setSetup(await api.post('/auth/2fa/setup'))}>
+            <button className="btn btn-primary" disabled={busy} style={{ alignSelf: 'flex-start' }} onClick={() => void perform(async()=>{setSetup(await api.post('/auth/2fa/setup'));})}>
               Включить 2FA
             </button>
           </>

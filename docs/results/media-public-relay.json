@@ -1,0 +1,132 @@
+{
+  "source": "synthetic 1920x1080 canvas at 60 fps + stereo 220/880 Hz tones",
+  "browser": "155.0.8059.80",
+  "node": "v24.19.0",
+  "platform": "win32",
+  "quality": "1080p60",
+  "motion": true,
+  "errors": [],
+  "micDeviceFallback": true,
+  "logicalCores": 12,
+  "firstFrameMs": 513,
+  "latency": {
+    "samples": 177,
+    "invalid": 0,
+    "medianMs": 136,
+    "p95Ms": 141,
+    "presentedFps": 52.98819490873468,
+    "width": 1920,
+    "height": 1080
+  },
+  "publisher": [
+    {
+      "type": "inbound-rtp",
+      "kind": "audio",
+      "ssrc": 22106333,
+      "codec": "audio/opus",
+      "bytes": 646276,
+      "encodeMs": null,
+      "bufferMs": 57.1127562642369,
+      "packetsLost": 0
+    },
+    {
+      "type": "outbound-rtp",
+      "kind": "audio",
+      "ssrc": 329375229,
+      "codec": "audio/opus",
+      "bytes": 685830,
+      "encodeMs": null,
+      "bufferMs": null
+    },
+    {
+      "type": "outbound-rtp",
+      "kind": "audio",
+      "ssrc": 3860196644,
+      "codec": "audio/opus",
+      "bytes": 851369,
+      "encodeMs": null,
+      "bufferMs": null
+    },
+    {
+      "type": "outbound-rtp",
+      "kind": "video",
+      "ssrc": 1937400751,
+      "codec": "video/H264",
+      "bytes": 864227,
+      "frames": 1929,
+      "width": 1920,
+      "height": 1080,
+      "fps": 54,
+      "limited": "none",
+      "encodeMs": 3.0165889061689994,
+      "bufferMs": null
+    }
+  ],
+  "receiver": [
+    {
+      "type": "inbound-rtp",
+      "kind": "audio",
+      "ssrc": 1896684294,
+      "codec": "audio/opus",
+      "bytes": 845598,
+      "encodeMs": null,
+      "bufferMs": 45.558086560364465,
+      "packetsLost": 1
+    },
+    {
+      "type": "inbound-rtp",
+      "kind": "audio",
+      "ssrc": 3203236572,
+      "codec": "audio/opus",
+      "bytes": 641575,
+      "encodeMs": null,
+      "bufferMs": 31.69291338582677,
+      "packetsLost": 2
+    },
+    {
+      "type": "inbound-rtp",
+      "kind": "video",
+      "ssrc": 549140042,
+      "codec": "video/H264",
+      "bytes": 856798,
+      "frames": 1919,
+      "width": 1920,
+      "height": 1080,
+      "fps": 55,
+      "dropped": 0,
+      "encodeMs": null,
+      "bufferMs": 39.55294163626889,
+      "packetsLost": 3
+    },
+    {
+      "type": "outbound-rtp",
+      "kind": "audio",
+      "ssrc": 1550923591,
+      "codec": "audio/opus",
+      "bytes": 647153,
+      "encodeMs": null,
+      "bufferMs": null
+    }
+  ],
+  "transport": [
+    {
+      "remotePort": 7882,
+      "protocol": "udp",
+      "remoteType": "host",
+      "localType": "prflx",
+      "relayProtocol": "udp"
+    }
+  ],
+  "relayPolicy": true,
+  "stereo": [
+    {
+      "low": -56.39268493652344,
+      "high": -155.1352081298828
+    },
+    {
+      "low": -152.3449249267578,
+      "high": -55.644039154052734
+    }
+  ],
+  "cleanDisconnect": true
+}

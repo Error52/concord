@@ -2,6 +2,12 @@
 # Then open http://localhost
 name: concord
 
+x-logging: &service-logging
+  driver: local
+  options:
+    max-size: "10m"
+    max-file: "3"
+
 x-backend-env: &backend-env
   NODE_ENV: production
   PORT: 4000
@@ -40,11 +46,13 @@ x-backend-env: &backend-env
   MAIL_FROM: ${MAIL_FROM:-Concord <no-reply@concord.local>}
   MAIL_ENCRYPTION_KEY: ${MAIL_ENCRYPTION_KEY:-${JWT_SECRET}}
   SEED_ON_START: ${SEED_ON_START:-1}
+  BOOTSTRAP_FIRST_ADMIN: ${BOOTSTRAP_FIRST_ADMIN:-false}
   PLATFORM_ADMIN_EMAILS: ${PLATFORM_ADMIN_EMAILS:-}
   LOG_LEVEL: ${LOG_LEVEL:-info}
 
 services:
   frontend:
+    logging: *service-logging
     build:
       context: ./frontend
       args:
@@ -58,6 +66,7 @@ services:
     restart: unless-stopped
 
   backend:
+    logging: *service-logging
     build:
       context: ./backend
       args:
@@ -73,6 +82,7 @@ services:
     restart: unless-stopped
 
   postgres:
+    logging: *service-logging
     # Existing clusters must retain their original libc/locale provider.
     image: ${POSTGRES_IMAGE:?Set POSTGRES_IMAGE to the image family that created pgdata - see docs/UPGRADING.md}
     environment:
@@ -90,6 +100,7 @@ services:
     restart: unless-stopped
 
   redis:
+    logging: *service-logging
     image: redis:7-alpine
     command: ["redis-server", "--appendonly", "yes"]
     volumes:
@@ -104,6 +115,7 @@ services:
 
   # SFU. Signalling is proxied by nginx at /livekit; media uses the UDP range below (and TCP 7881 fallback).
   livekit:
+    logging: *service-logging
     image: livekit/livekit-server:v1.13.9
     # livekit-server reads its YAML from LIVEKIT_CONFIG and the advertised media IP from NODE_IP.
     environment:
@@ -117,6 +129,8 @@ services:
           udp_port: ${LIVEKIT_UDP_PORT:-7882}
           enable_loopback_candidate: ${LIVEKIT_ENABLE_LOOPBACK:-false}
           use_external_ip: false
+          # TURN can reach this exact private SFU address without Docker hairpin NAT.
+          advertise_internal_ip: ${LIVEKIT_ADVERTISE_INTERNAL_IP:-true}
           turn_servers:
             - host: ${TURN_PUBLIC_HOST:-localhost}
               port: 3478
@@ -144,7 +158,13 @@ services:
 
   # TURN relay for clients behind symmetric NAT / restrictive firewalls.
   coturn:
+    logging: *service-logging
     image: coturn/coturn:4.18
+    entrypoint: ["/bin/sh", "/etc/concord/start-turn.sh"]
+    volumes:
+      - ./deploy/start-turn.sh:/etc/concord/start-turn.sh:ro
+    depends_on:
+      - livekit
     command:
       - -n
       - --log-file=stdout
@@ -156,9 +176,9 @@ services:
       - --external-ip=${TURN_EXTERNAL_IP:-127.0.0.1}
       - --min-port=49160
       - --max-port=49200
-      - --no-cli
-      - --no-tlsv1
-      - --no-tlsv1_1
+      # Only TURN/UDP and TURN/TCP are published. TLS listeners need separate certificates.
+      - --no-tls
+      - --no-tcp-relay
       - --denied-peer-ip=0.0.0.0-0.255.255.255
       - --denied-peer-ip=127.0.0.0-127.255.255.255
       - --denied-peer-ip=169.254.0.0-169.254.255.255
@@ -176,6 +196,7 @@ services:
   # HTTPS in front of the app for LAN testing (browsers allow microphone/camera only on HTTPS or localhost).
   # Enabled by COMPOSE_PROFILES=https (set by ./scripts/setup.sh --lan). Certificates come from Caddy's local CA.
   caddy:
+    logging: *service-logging
     image: caddy:2.11.7-alpine
     profiles: ["https"]
     environment:
@@ -194,24 +215,27 @@ services:
 
   # Public HTTPS on a real server: automatic Let's Encrypt certificate for DOMAIN (COMPOSE_PROFILES=server).
   caddy-public:
+    logging: *service-logging
     image: caddy:2.11.7-alpine
     profiles: ["server"]
     environment:
       DOMAIN: ${DOMAIN:-localhost}
       ACME_EMAIL: ${ACME_EMAIL:-admin@example.com}
+      PUBLIC_HTTPS_PORT: ${PUBLIC_HTTPS_PORT:-443}
     volumes:
       - ./deploy/Caddyfile.server:/etc/caddy/Caddyfile:ro
       - caddydata:/data
     ports:
       - "80:80"
-      - "443:443"
-      - "443:443/udp"
+      - "${PUBLIC_HTTPS_PORT:-443}:${PUBLIC_HTTPS_PORT:-443}"
+      - "${PUBLIC_HTTPS_PORT:-443}:${PUBLIC_HTTPS_PORT:-443}/udp"
     depends_on:
       - frontend
     restart: unless-stopped
 
   # Catches password-reset emails in development: http://localhost:8025
   mailpit:
+    logging: *service-logging
     image: axllent/mailpit:v1.31.5
     profiles: ["dev"]
     ports:

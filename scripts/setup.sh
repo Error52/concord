@@ -185,6 +185,7 @@ while IFS= read -r line || [ -n "$line" ]; do
     COOKIE_SECURE) kv COOKIE_SECURE "$COOKIE_SECURE" ;;
     DEMO_MAILBOX) if [ "$MODE" = lan ]; then kv DEMO_MAILBOX true; else kv DEMO_MAILBOX false; fi ;;
     LIVEKIT_ENABLE_LOOPBACK) if [ "$MODE" = server ]; then kv LIVEKIT_ENABLE_LOOPBACK false; else kv LIVEKIT_ENABLE_LOOPBACK true; fi ;;
+    LIVEKIT_ADVERTISE_INTERNAL_IP) kv LIVEKIT_ADVERTISE_INTERNAL_IP true ;;
     COMPOSE_PROFILES) kv COMPOSE_PROFILES "$PROFILES" ;;
     POSTGRES_PASSWORD) kv POSTGRES_PASSWORD "$PG" ;;
     DATABASE_URL) kv DATABASE_URL "postgres://concord:$PG@localhost:5432/concord" ;;
@@ -200,6 +201,7 @@ while IFS= read -r line || [ -n "$line" ]; do
     TURN_DENY_C) kv TURN_DENY_C "$DENY_C" ;;
     SMTP_HOST) kv SMTP_HOST "$SMTP_DEFAULT" ;;
     SEED_ON_START) kv SEED_ON_START "$SEED" ;;
+    BOOTSTRAP_FIRST_ADMIN) if [ "$MODE" = server ]; then kv BOOTSTRAP_FIRST_ADMIN false; else kv BOOTSTRAP_FIRST_ADMIN true; fi ;;
     *) printf '%s\n' "$line" ;;
   esac
 done < .env.example > "$TMP"
@@ -220,7 +222,9 @@ case "$MODE" in
     echo "  Demo users: alice@concord.local / demo12345 (also bob, carol, dave)"
     ;;
   server)
-    echo "  open $APP_URL  — register the first account there and invite friends with an invite link."
+    echo "  open $APP_URL — register and verify your account, then invite friends with an invite link."
+    echo "  To administer the platform: make admin EMAIL=your-verified-account@example.com"
+    echo "  Public visitors never receive platform admin automatically."
     echo "  Firewall: open 80/tcp, 443/tcp+udp, 7881/tcp, 7882/udp, 3478/tcp+udp, 49160-49200/udp"
     echo "  (cloud providers: also in the provider's security group / firewall panel)."
     echo "  Before starting: set SMTP_HOST, SMTP_PORT, MAIL_FROM and SMTP_TLS/SMTP_STARTTLS in .env."

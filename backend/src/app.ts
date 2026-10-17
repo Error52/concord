@@ -1,5 +1,6 @@
 import http from 'node:http';
-import { Router } from './http/router.js';
+import { Router,Reply } from './http/router.js';
+import { isReady } from './services/readiness.js';
 import { authenticateRequest } from './middleware/auth.js';
 import { registerAuth } from './controllers/authController.js';
 import { registerUsers } from './controllers/userController.js';
@@ -17,6 +18,7 @@ export interface App {
 /** Builds the HTTP server + WebSocket gateway. Routes are reachable both with and without the /api prefix. */
 export function createApp(): App {
   const router = new Router(authenticateRequest);
+  router.get('/ready',{auth:'none'},async()=>{const ok=await isReady();return new Reply(ok?200:503,{ok});});
   registerAuth(router);
   registerUsers(router);
   registerServers(router);
@@ -25,7 +27,13 @@ export function createApp(): App {
   registerAdmin(router);
 
   const server = http.createServer((req, res) => {
-    const url = new URL(req.url ?? '/', 'http://localhost');
+    let url:URL;
+    try {url=new URL(req.url ?? '/', 'http://localhost');}
+    catch {
+      res.writeHead(400,{'Connection':'close','Content-Type':'application/json; charset=utf-8','Cache-Control':'no-store'})
+        .end(JSON.stringify({error:{code:'BAD_REQUEST',message:'Некорректный адрес запроса'}}));
+      return;
+    }
     const path = url.pathname.startsWith('/api/') ? url.pathname.slice(4) : url.pathname;
     void router.handle(req, res, path, url.searchParams);
   });

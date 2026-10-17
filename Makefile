@@ -62,11 +62,8 @@ admins: ## List platform admins
 clean: ## Stop and DELETE all data (database, files, certificates)
 	$(COMPOSE) down -v
 
-backup: ## Back up the database and uploaded files to ./backups
-	@mkdir -p backups
-	$(COMPOSE) exec -T postgres sh -c 'pg_dump -U "$$POSTGRES_USER" "$$POSTGRES_DB"' | gzip > backups/db-$$(date +%Y%m%d-%H%M%S).sql.gz
-	$(COMPOSE) exec -T backend tar -czf - -C /app/data uploads > backups/uploads-$$(date +%Y%m%d-%H%M%S).tar.gz
-	@ls -1t backups | head -2 | sed 's/^/  saved: backups\//'
+backup: ## Atomic backup set in ./backups (QUIESCE=1 for a consistent snapshot; briefly stops backend)
+	@./scripts/backup.sh $(if $(QUIESCE),--quiesce,)
 
 install-server: ## Install on a Linux VPS (sudo; usage: make install-server DOMAIN=chat.example.com EMAIL=you@example.com)
 	sudo ./scripts/install-server.sh $(DOMAIN) $(EMAIL)

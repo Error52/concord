@@ -1,0 +1,12 @@
+{
+  "checks": [
+    "failed initial history has a visible retry without leaving the channel",
+    "a pinned direct message navigates to its history position",
+    "failed server creation retains its dialog and entered name for retry",
+    "failed channel creation retains its dialog and entered name for retry",
+    "repeated Enter sends one pending channel creation",
+    "2FA setup reports a server failure and remains retryable without a page error"
+  ],
+  "failures": [],
+  "errors": []
+}

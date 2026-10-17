@@ -53,6 +53,7 @@ export async function upload(req: IncomingMessage, channelId: string, userId: st
   let height: number | null = null;
   let previewKey: string | null = null;
 
+  try {
   if (sniffed.kind === 'image') {
     try {
       const meta = await sharp(data, { limitInputPixels: 100_000_000 }).metadata();
@@ -76,6 +77,12 @@ export async function upload(req: IncomingMessage, channelId: string, userId: st
     [id, userId, channelId, key, previewKey, filename, mime, data.length, sniffed.kind, width, height],
   );
   return toAttachment(row!);
+  } catch(err) {
+    // Failed writes can leave a partial object and INSERT failures leave no SQL
+    // row for cleanupOrphans. Both keys belong exclusively to this upload UUID.
+    await Promise.allSettled([storage.delete(key),...(previewKey?[storage.delete(previewKey)]:[])]);
+    throw err;
+  }
 }
 
 function officeMime(filename: string): string {

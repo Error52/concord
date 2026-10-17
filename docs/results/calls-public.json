@@ -1,0 +1,45 @@
+{
+  "checks": [
+    {
+      "name": "caller cancellation clears the incoming ring and records exactly one missed call",
+      "ms": 1429,
+      "history": [
+        {
+          "id": "115",
+          "content": "call:missed"
+        }
+      ]
+    },
+    {
+      "name": "callee decline followed by caller departure records exactly one missed call",
+      "ms": 1181,
+      "history": [
+        {
+          "id": "116",
+          "content": "call:missed"
+        }
+      ]
+    },
+    {
+      "name": "an answered real SFU call is recorded only after its last participant leaves",
+      "ms": 1556,
+      "history": [
+        {
+          "id": "117",
+          "content": "call:ended:1"
+        }
+      ]
+    },
+    {
+      "name": "stale and missing participant SIDs cannot cancel a new ring from the same caller",
+      "ms": 939,
+      "history": [
+        {
+          "id": "118",
+          "content": "call:missed"
+        }
+      ]
+    }
+  ],
+  "errors": []
+}

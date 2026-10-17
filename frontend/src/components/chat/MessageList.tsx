@@ -104,8 +104,12 @@ export function MessageList({ channelId, serverId, jumpTo, intro }: Props) {
     <>
       <div className="messages scroll" ref={ref} onScroll={onScroll} role="log" aria-live="polite" aria-label="Сообщения">
         {list && !list.hasMoreBefore && intro}
+        {list?.loadFailed && <div className="empty" role="alert">
+          <p>Не удалось загрузить сообщения.</p>
+          <button className="btn btn-secondary btn-sm" disabled={list.loading} onClick={() => void loadMessages(channelId, jumpTo ? {around: jumpTo} : {reset: true})}>Повторить загрузку сообщений</button>
+        </div>}
         {list?.loading && items.length === 0 && <MessageSkeletons />}
-        {list?.hasMoreBefore && items.length > 0 && <MessageSkeletons count={2} />}
+        {list?.hasMoreBefore && !list.loadFailed && items.length > 0 && <MessageSkeletons count={2} />}
         {items.map((m, i) => {
           const day = new Date(m.createdAt).toDateString();
           const divider = day !== lastDay ? <div className="divider-text">{formatDate(m.createdAt)}</div> : null;

@@ -23,6 +23,10 @@ const schema = z.object({
   // Explicit demo-only mode: own verification letter is visible after password authentication.
   // Keep off when validating real email ownership through SMTP.
   DEMO_MAILBOX: bool,
+  // Public installations grant admins deliberately through the local CLI.
+  // Local/test demos retain their first-account bootstrap unless explicitly disabled.
+  BOOTSTRAP_FIRST_ADMIN: z.enum(['true','false','1','0'])
+    .default(process.env.NODE_ENV==='production'?'false':'true').transform(v=>v==='true'||v==='1'),
 
   STORAGE_DRIVER: z.enum(['s3', 'local']).default('s3'),
   STORAGE_LOCAL_DIR: z.string().default('./data/uploads'),

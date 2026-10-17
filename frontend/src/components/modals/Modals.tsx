@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { LuCopy, LuHash, LuVolume2 } from 'react-icons/lu';
 import { api, errorMessage } from '../../api/client';
 import { useApp } from '../../state/app';
@@ -19,14 +19,16 @@ function CreateServerModal() {
   const [isPublic, setPublic] = useState(false);
   const [invite, setInvite] = useState('');
   const [busy, setBusy] = useState(false);
+  const submitting=useRef(false);
   const submit = async () => {
+    if(submitting.current || (mode==='create'?name.trim().length<2:!invite.trim()))return;
+    submitting.current=true;
     setBusy(true);
-    if (mode === 'create') await createServer(name.trim(), isPublic);
-    else {
+    try {
       const code = invite.trim().split('/').filter(Boolean).pop() ?? '';
-      if (!(await joinByInvite(code))) return setBusy(false);
-    }
-    close();
+      const created=mode==='create'?await createServer(name.trim(),isPublic):await joinByInvite(code);
+      if(created)close();
+    } finally {submitting.current=false;setBusy(false);}
   };
   return (
     <Modal
@@ -35,7 +37,7 @@ function CreateServerModal() {
       onClose={close}
       footer={
         <>
-          <button className="btn btn-ghost" onClick={() => setMode(mode === 'create' ? 'join' : 'create')}>
+          <button className="btn btn-ghost" disabled={busy} onClick={() => setMode(mode === 'create' ? 'join' : 'create')}>
             {mode === 'create' ? 'У меня есть приглашение' : 'Создать свой'}
           </button>
           <button className="btn btn-primary" disabled={busy || (mode === 'create' ? name.trim().length < 2 : !invite.trim())} onClick={() => void submit()}>
@@ -73,11 +75,14 @@ function CreateChannelModal({ serverId, type: initialType }: { serverId: string;
   const [name, setName] = useState('');
   const categories = useApp((s) => [...new Set(Object.values(s.channels).filter((c) => c.serverId === serverId && c.type === type).map((c) => c.category))]);
   const [category, setCategory] = useState('');
+  const [busy,setBusy]=useState(false);
+  const submitting=useRef(false);
   useEffect(() => setCategory(categories[0] ?? ''), [type]);
   const submit = async () => {
-    if (!name.trim()) return;
-    await createChannel(serverId, name, type, category || undefined);
-    close();
+    if (submitting.current||!name.trim()) return;
+    submitting.current=true;setBusy(true);
+    try {if(await createChannel(serverId, name.trim(), type, category || undefined))close();}
+    finally{submitting.current=false;setBusy(false);}
   };
   return (
     <Modal
@@ -88,7 +93,7 @@ function CreateChannelModal({ serverId, type: initialType }: { serverId: string;
           <button className="btn btn-ghost" onClick={close}>
             Отмена
           </button>
-          <button className="btn btn-primary" disabled={!name.trim()} onClick={() => void submit()}>
+          <button className="btn btn-primary" disabled={busy||!name.trim()} onClick={() => void submit()}>
             Создать канал
           </button>
         </>

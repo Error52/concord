@@ -1,0 +1,23 @@
+TAP version 13
+# Subtest: backup publishes complete sets only and restarts a quiesced backend even when pg_dump fails
+ok 1 - backup publishes complete sets only and restarts a quiesced backend even when pg_dump fails
+# Subtest: dev init and LAN updates protect env permissions, secrets and configured ports
+ok 2 - dev init and LAN updates protect env permissions, secrets and configured ports
+# Subtest: Compose keeps explicit SMTP, custom registry/media ports and refuses an unknown database image
+ok 3 - Compose keeps explicit SMTP, custom registry/media ports and refuses an unknown database image
+# Subtest: Compose does not bootstrap a public administrator when the setting is missing
+ok 4 - Compose does not bootstrap a public administrator when the setting is missing
+# Subtest: nginx preserves security headers, LiveKit paths and discovers recreated backend IPs
+ok 5 - nginx preserves security headers, LiveKit paths and discovers recreated backend IPs
+# Subtest: pinned coturn starts with the exact Compose command
+ok 6 - pinned coturn starts with the exact Compose command
+1..6
+# tests 6
+# suites 0
+# pass 6
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 22835.525386
+

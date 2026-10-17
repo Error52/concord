@@ -14,11 +14,12 @@ async function attempt<T>(fn: () => Promise<T>, fallback: string): Promise<T | n
   }
 }
 
-export async function createServer(name: string, isPublic: boolean): Promise<void> {
+export async function createServer(name: string, isPublic: boolean): Promise<boolean> {
   const full = await attempt(() => api.post<FullServer>('/servers', { name, isPublic }), 'Не удалось создать сервер');
-  if (!full) return;
+  if (!full) return false;
   await refreshServer(full.server.id);
   navigate({ name: 'channel', serverId: full.server.id, channelId: firstTextChannel(getState(), full.server.id) });
+  return true;
 }
 
 export async function joinByInvite(code: string): Promise<boolean> {
@@ -46,12 +47,14 @@ export async function deleteServer(serverId: string): Promise<boolean> {
   return (await attempt(() => api.del(`/servers/${serverId}`).then(() => true), 'Не удалось удалить сервер')) ?? false;
 }
 
-export async function createChannel(serverId: string, name: string, type: 'text' | 'voice', category?: string): Promise<void> {
+export async function createChannel(serverId: string, name: string, type: 'text' | 'voice', category?: string): Promise<boolean> {
   const ch = await attempt(() => api.post<Channel>(`/servers/${serverId}/channels`, { name, type, category }), 'Не удалось создать канал');
   if (ch) {
     setState((s) => ({ channels: { ...s.channels, [ch.id]: ch } }));
     if (type === 'text') navigate({ name: 'channel', serverId, channelId: ch.id });
+    return true;
   }
+  return false;
 }
 
 export async function deleteChannel(ch: Channel): Promise<void> {
