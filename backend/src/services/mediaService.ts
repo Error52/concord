@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto';
 import sharp from 'sharp';
 import { Errors } from '../http/errors.js';
 import { storage } from '../storage/index.js';
+import {audioOnlyMp4,audioOnlyWebm} from '../utils/mediaTracks.js';
 
 /** Reads a request body into memory, aborting as soon as it exceeds maxBytes. */
 export async function readBody(req: IncomingMessage, maxBytes: number): Promise<Buffer> {
@@ -45,10 +46,12 @@ export function sniff(buf: Buffer): Sniffed | null {
     const brand = ascii(buf, 8, 12);
     if (brand.startsWith('avif') || brand === 'avis') return { mime: 'image/avif', kind: 'image', extensions: ['avif'] };
     if (brand === 'qt  ') return { mime: 'video/quicktime', kind: 'video', extensions: ['mov'] };
-    if (brand.startsWith('M4A')) return { mime: 'audio/mp4', kind: 'audio', extensions: ['m4a'] };
+    if (brand.startsWith('M4A')||audioOnlyMp4(buf)) return { mime: 'audio/mp4', kind: 'audio', extensions: ['m4a','mp4'] };
     return { mime: 'video/mp4', kind: 'video', extensions: ['mp4', 'm4v'] };
   }
-  if (startsWith(buf, [0x1a, 0x45, 0xdf, 0xa3])) return { mime: 'video/webm', kind: 'video', extensions: ['webm', 'mkv'] };
+  if (startsWith(buf, [0x1a, 0x45, 0xdf, 0xa3])) return audioOnlyWebm(buf)
+    ? {mime:'audio/webm',kind:'audio',extensions:['webm','mka','mkv']}
+    : { mime: 'video/webm', kind: 'video', extensions: ['webm', 'mkv'] };
   if (ascii(buf, 0, 4) === 'OggS') return { mime: 'audio/ogg', kind: 'audio', extensions: ['ogg', 'oga', 'opus'] };
   if (ascii(buf, 0, 3) === 'ID3' || startsWith(buf, [0xff, 0xfb]) || startsWith(buf, [0xff, 0xf3]) || startsWith(buf, [0xff, 0xf2]))
     return { mime: 'audio/mpeg', kind: 'audio', extensions: ['mp3'] };

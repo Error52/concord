@@ -190,7 +190,9 @@ function onMessageNew(m: Message): void {
     const dms = st.dms[m.channelId] ? { ...st.dms, [m.channelId]: { ...st.dms[m.channelId]!, lastMessageId } } : st.dms;
     const typing = st.typing[m.channelId] && m.author ? { ...st.typing, [m.channelId]: Object.fromEntries(Object.entries(st.typing[m.channelId]!).filter(([u]) => u !== m.author!.id)) } : st.typing;
     return {
-      channels: ch ? { ...st.channels, [m.channelId]: { ...ch, lastMessageId } } : st.channels,
+      channels: ch ? { ...st.channels, [m.channelId]: { ...ch, lastMessageId } } : m.serverId ? st.channels : {
+        ...st.channels,[m.channelId]:{id:m.channelId,serverId:null,type:'dm',name:'',topic:'',category:'',position:0,slowmodeSeconds:0,lastMessageId},
+      },
       messages: { ...st.messages, [m.channelId]: upsertMessage(st.messages[m.channelId], m)! },
       readStates: nextRead,
       dms,
@@ -209,18 +211,22 @@ export function isViewing(channelId: string): boolean {
 async function loadDm(id: string): Promise<void> {
   try {
     const dm = await api.get<Dm>(`/dm/${id}`);
-    onDmCreate(dm);
+    applyDm(dm);
   } catch {
     /* ignore */
   }
 }
 
-function onDmCreate(dm: Dm): void {
-  setState((s) => ({
-    dms: { ...s.dms, [dm.id]: dm },
-    channels: { ...s.channels, [dm.id]: { id: dm.id, serverId: null, type: 'dm', name: '', topic: '', category: '', position: 0, slowmodeSeconds: 0, lastMessageId: dm.lastMessageId } },
-    users: mergeUsers(s, dm.recipients),
-  }));
+export function applyDm(dm: Dm): void {
+  setState((s) => {
+    let lastMessageId=dm.lastMessageId;
+    for(const existing of [s.dms[dm.id]?.lastMessageId,s.channels[dm.id]?.lastMessageId])if(existing&&(!lastMessageId||isNewer(existing,lastMessageId)))lastMessageId=existing;
+    return {
+      dms: { ...s.dms, [dm.id]: {...dm,lastMessageId} },
+      channels: { ...s.channels, [dm.id]: { id: dm.id, serverId: null, type: 'dm', name: '', topic: '', category: '', position: 0, slowmodeSeconds: 0, lastMessageId } },
+      users: mergeUsers(s, dm.recipients),
+    };
+  });
 }
 
 function patchMessage(channelId: string, id: string, fn: (m: Message) => Message | null): void {
@@ -370,7 +376,7 @@ gateway.on('presence:update', (d: { userId: string; status: User['status'] }) =>
 );
 gateway.on('user:update', (u: User) => patchUser(u));
 gateway.on('friend:update', (list: Relation[]) => setState((s) => ({ relationships: indexBy(list, (r) => r.id), users: mergeUsers(s, list.map((r) => r.user)) })));
-gateway.on('dm:create', onDmCreate);
+gateway.on('dm:create', applyDm);
 gateway.on('notification:new', onNotification);
 gateway.on('server:create', (full: FullServer) => changeServerState(full.server.id,(s) => applyFullServer(s, full)));
 gateway.on('server:update', (srv: Server) => changeServerState(srv.id,(s) => ({ servers: { ...s.servers, [srv.id]: srv } })));
@@ -490,6 +496,7 @@ export async function bootstrap(): Promise<void> {
 }
 
 export function needsEmailVerification(user:SelfUser):boolean {
+  if(typeof user.accountReady==='boolean')return !user.accountReady;
   return user.emailVerificationRequired && !user.emailVerified;
 }
 

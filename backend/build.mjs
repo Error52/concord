@@ -3,7 +3,7 @@
 import * as esbuild from 'esbuild';
 
 await esbuild.build({
-  entryPoints: { index: 'src/index.ts', 'seed-cli': 'src/db/seed-cli.ts', 'migrate-cli': 'src/db/migrate-cli.ts', 'admin-cli': 'src/db/admin-cli.ts' },
+  entryPoints: { index: 'src/index.ts', 'seed-cli': 'src/db/seed-cli.ts', 'migrate-cli': 'src/db/migrate-cli.ts', 'admin-cli': 'src/db/admin-cli.ts', 'recover-account-cli': 'src/db/recover-account-cli.ts' },
   outdir: 'dist',
   bundle: true,
   platform: 'node',

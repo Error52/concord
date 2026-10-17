@@ -6,6 +6,7 @@ import { redisSub } from '../redis.js';
 import { log } from '../logger.js';
 import { corsOrigins, config } from '../config.js';
 import { verifyAccessToken } from '../middleware/auth.js';
+import {accountReady} from '../auth/accountReadiness.js';
 import { BUS_CHANNEL, emit, type BusMessage, type Dispatch } from './bus.js';
 import { Ev, Op } from './events.js';
 import * as presence from '../services/presenceService.js';
@@ -341,7 +342,7 @@ export class Gateway {
       conn.ws.close(Close.AuthFailed, 'invalid token');
       return;
     }
-    if (config.REQUIRE_EMAIL_VERIFICATION && !row.email_verified_at) {
+    if (!accountReady(row)) {
       conn.ws.close(Close.AuthFailed, 'email verification required');
       return;
     }

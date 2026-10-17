@@ -47,10 +47,20 @@ export interface SelfUser extends User {
   email: string;
   emailVerified: boolean;
   emailVerificationRequired: boolean;
+  accountReady: boolean;
+  hasRecoveryWord: boolean;
+  recoveryWordAllowed: boolean;
+  verificationMode: 'email' | 'secret-word';
   demoMailbox: boolean;
   chosenStatus: ChosenStatus;
   totpEnabled: boolean;
   isPlatformAdmin: boolean;
+}
+
+export interface AuthOptions {
+  verificationMode: 'email' | 'secret-word';
+  recoveryWordMinLength: number;
+  recoveryWordMaxLength: number;
 }
 
 export interface Role {

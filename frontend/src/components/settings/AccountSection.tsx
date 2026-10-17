@@ -7,6 +7,7 @@ import { unblockUser } from '../../state/serverActions';
 import { logout } from '../../state/actions';
 import { Avatar } from '../ui/Avatar';
 import { ProfileCard } from '../profile/ProfileCard';
+import { RecoveryWordForm } from '../auth/RecoveryWordForm';
 
 export function AccountSection() {
   const me = useApp((s) => s.me);
@@ -165,6 +166,10 @@ export function SecuritySection() {
           </>
         )}
       </div>
+      {me.verificationMode==='secret-word'&&<>
+        <h3>Восстановление доступа</h3>
+        {me.recoveryWordAllowed?<RecoveryWordForm me={me} onSaved={user=>{setState({me:user});toast('Секретное слово сохранено','success');}}/>:<div className="card col"><p className="field-hint">Для администраторов восстановление секретным словом отключено. Если доступ потерян, обратитесь к владельцу сервиса для восстановления через консоль сервера. Вход по паролю и 2FA остаётся доступен.</p></div>}
+      </>}
       <h3>Активные сеансы</h3>
       <div className="card">
         {sessions.map((s) => (

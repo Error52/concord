@@ -22,7 +22,7 @@ const MAX_BYTES = (): number => config.MAX_UPLOAD_MB * 1024 * 1024;
 const INLINE_SAFE = new Set([
   'image/png', 'image/jpeg', 'image/gif', 'image/webp', 'image/avif',
   'video/mp4', 'video/webm', 'video/quicktime',
-  'audio/mpeg', 'audio/ogg', 'audio/wav', 'audio/flac', 'audio/mp4',
+  'audio/mpeg', 'audio/ogg', 'audio/wav', 'audio/flac', 'audio/mp4', 'audio/webm',
   'application/pdf',
 ]);
 

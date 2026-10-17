@@ -39,6 +39,7 @@ export async function clearInvalidMail():Promise<void>{
 /** Row locks isolate workers; delivery is at least once if a process dies after SMTP acceptance. */
 export async function deliverPendingMail(limit = 10): Promise<void> {
   await clearInvalidMail();
+  if(config.ACCOUNT_VERIFICATION_MODE==='secret-word')return;
   for (let i = 0; i < limit; i++) {
     const found = await tx(async (db) => {
       const row = await queryOne<{id:string;recipient:string;subject:string;text_body:string;html_body:string;attempts:number}>(

@@ -22,11 +22,12 @@ const docker=spawnSync('docker',['compose','version'],{encoding:'utf8'});
 test('Compose keeps explicit SMTP, custom registry/media ports and refuses an unknown database image',{skip:docker.status!==0?'Docker Compose is required':false},async()=>sandbox(async temp=>{
  const example=await readFile(path.join(root,'.env.example'),'utf8'),filename=path.join(temp,'test.env');
  const env={...process.env};for(const line of example.split('\n')){const key=/^([A-Z0-9_]+)=/.exec(line)?.[1];if(key)delete env[key];}
- let content=example.replace(/^SMTP_HOST=.*$/m,'SMTP_HOST=').replace(/^NPM_REGISTRY=.*$/m,'NPM_REGISTRY=https://registry.example.com').replace(/^LIVEKIT_TCP_PORT=.*$/m,'LIVEKIT_TCP_PORT=7981').replace(/^LIVEKIT_UDP_PORT=.*$/m,'LIVEKIT_UDP_PORT=7982').replace(/^COMPOSE_PROFILES=.*$/m,'COMPOSE_PROFILES=server').replace(/^PUBLIC_HTTPS_PORT=.*$/m,'PUBLIC_HTTPS_PORT=8443');
+ let content=example.replace(/^SMTP_HOST=.*$/m,'SMTP_HOST=').replace(/^ACCOUNT_VERIFICATION_MODE=.*$/m,'ACCOUNT_VERIFICATION_MODE=secret-word').replace(/^NPM_REGISTRY=.*$/m,'NPM_REGISTRY=https://registry.example.com').replace(/^LIVEKIT_TCP_PORT=.*$/m,'LIVEKIT_TCP_PORT=7981').replace(/^LIVEKIT_UDP_PORT=.*$/m,'LIVEKIT_UDP_PORT=7982').replace(/^COMPOSE_PROFILES=.*$/m,'COMPOSE_PROFILES=server').replace(/^PUBLIC_HTTPS_PORT=.*$/m,'PUBLIC_HTTPS_PORT=8443');
  await writeFile(filename,content,{mode:0o600});
  const run=()=>spawnSync('docker',['compose','--env-file',filename,'config','--format','json'],{cwd:root,env,encoding:'utf8'});
  const result=run();assert.equal(result.status,0,result.stderr);const config=JSON.parse(result.stdout);
  assert.equal(config.services.backend.environment.SMTP_HOST,'');assert.equal(config.services.frontend.build.args.NPM_REGISTRY,'https://registry.example.com');
+ assert.equal(config.services.backend.environment.ACCOUNT_VERIFICATION_MODE,'secret-word');
  assert.equal(String(config.services.backend.environment.BOOTSTRAP_FIRST_ADMIN),'true');
  assert.ok(config.services.livekit.ports.some(p=>p.target===7981&&String(p.published)==='7981'));assert.ok(config.services.livekit.ports.some(p=>p.target===7982&&p.protocol==='udp'));
  assert.ok(config.services['caddy-public'].ports.some(p=>p.target===8443&&String(p.published)==='8443'));assert.equal(String(config.services['caddy-public'].environment.PUBLIC_HTTPS_PORT),'8443');

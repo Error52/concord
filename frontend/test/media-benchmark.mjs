@@ -110,6 +110,9 @@ try {
  const start=Date.now();await a.locator('.stage-controls').getByRole('button',{name:'Демонстрация экрана',exact:true}).click();
  await b.waitForFunction(()=>document.querySelector('.tile.screen video')?.readyState>=2);
  result.firstFrameMs=Date.now()-start;
+ const qualityFloor=process.env.FORCE_VP8_RECEIVER==='1'?640:1280;
+ await b.waitForFunction(width=>(document.querySelector('.tile.screen video')?.videoWidth??0)>=width,qualityFloor,{timeout:25_000});
+ result.qualityReadyMs=Date.now()-start;
  if(process.env.EXPECT_FULL_RECONNECT==='1'){
   await a.locator('.stage-controls').getByRole('button',{name:'Камера',exact:true}).click();
   await a.waitForFunction(()=>window.__concordTestVoiceStore?.get().camera===true);

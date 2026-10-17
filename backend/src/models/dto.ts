@@ -47,6 +47,10 @@ export interface PublicUser {
 export interface SelfUser extends PublicUser {
   email: string;
   emailVerified: boolean;
+  accountReady:boolean;
+  hasRecoveryWord:boolean;
+  recoveryWordAllowed:boolean;
+  verificationMode:'email'|'secret-word';
   emailVerificationRequired: boolean;
   demoMailbox: boolean;
   chosenStatus: ChosenStatus;

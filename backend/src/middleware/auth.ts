@@ -4,6 +4,7 @@ import { config } from '../config.js';
 import { redis } from '../redis.js';
 import { queryOne } from '../db/pool.js';
 import type { AuthUser } from '../http/router.js';
+import {accountReady} from '../auth/accountReadiness.js';
 
 export interface AccessClaims {
   sub: string;
@@ -24,11 +25,11 @@ export async function verifyAccessToken(token: string): Promise<AuthUser | null>
   if (await redis.exists(revokedSessionKey(claims.sid))) return null;
   // Redis is a fast rejection path, not the durable source of session validity.
   // An earlier access token remains valid after rotation while its family is active.
-  const active=await queryOne(`SELECT 1 FROM sessions original WHERE original.id=$1 AND original.user_id=$2
+  const active=await queryOne<{email_verified_at:Date|null;local_verified_at:Date|null;is_platform_admin:boolean}>(`SELECT u.email_verified_at,u.local_verified_at,u.is_platform_admin FROM sessions original JOIN users u ON u.id=original.user_id WHERE original.id=$1 AND original.user_id=$2
     AND EXISTS (SELECT 1 FROM sessions active WHERE active.family_id=original.family_id
       AND active.revoked_at IS NULL AND active.expires_at>now())`,[claims.sid,claims.sub]);
   if(!active)return null;
-  return { id: claims.sub, sessionId: claims.sid, emailVerified: claims.ev !== false };
+  return { id: claims.sub, sessionId: claims.sid, emailVerified: claims.ev !== false&&accountReady(active) };
 }
 
 export async function authenticateRequest(req: IncomingMessage): Promise<AuthUser | null> {

@@ -45,9 +45,11 @@ function mediaSessionId(metadata:string|undefined):string|null|false{
 async function activeMediaSession(userId:string,sessionId:string,db:Queryable=pool):Promise<boolean>{
   if(!UUID_PATTERN.test(userId)||!UUID_PATTERN.test(sessionId))return false;
   // Rotation revokes the original refresh row; its access/media token still belongs to the active family.
-  return !!await queryOne(`SELECT 1 FROM sessions original WHERE original.id=$1 AND original.user_id=$2
+  return !!await queryOne(`SELECT 1 FROM sessions original JOIN users u ON u.id=original.user_id WHERE original.id=$1 AND original.user_id=$2
     AND EXISTS(SELECT 1 FROM sessions active WHERE active.family_id=original.family_id
-      AND active.revoked_at IS NULL AND active.expires_at>now())`,[sessionId,userId],db);
+      AND active.revoked_at IS NULL AND active.expires_at>now())
+    AND ($3::boolean=false OR u.email_verified_at IS NOT NULL OR ($4::boolean AND (u.local_verified_at IS NOT NULL OR u.is_platform_admin)))`,
+    [sessionId,userId,config.REQUIRE_EMAIL_VERIFICATION,config.ACCOUNT_VERIFICATION_MODE==='secret-word'],db);
 }
 
 async function removeObservedParticipant(userId:string,channelId:string,expected:LkParticipant):Promise<boolean>{

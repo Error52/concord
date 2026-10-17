@@ -10,6 +10,7 @@ import {newMessageNonce} from '../../utils/ids';
 import {composerRetryNonce,rememberComposerSend,restoreComposerDraft,useComposerDraft} from '../../state/composerDrafts';
 import { Avatar } from '../ui/Avatar';
 import { ComposerPicker, type PickerTab } from './Pickers';
+import {VoiceRecorder} from './VoiceRecorder';
 import type { Attachment, Gif, User } from '../../types';
 
 const MAX_FILE_MB = 25;
@@ -342,6 +343,7 @@ export const Composer = forwardRef<ComposerHandle, Props>(function Composer({ ch
               />
             </>
           )}
+          {canAttach&&<VoiceRecorder key={draftKey} disabled={uploads.length>=MAX_FILES} onFile={file=>addFiles([file])}/>}
           <textarea
             ref={taRef}
             rows={1}

@@ -13,6 +13,7 @@
     "migrate": "node dist/migrate-cli.js",
     "seed": "node dist/seed-cli.js",
     "admin": "node dist/admin-cli.js",
+    "recover-account": "node dist/recover-account-cli.js",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "node --import tsx --test --test-force-exit --test-concurrency=1 test/*.test.ts"
   },

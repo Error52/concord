@@ -227,8 +227,8 @@ case "$MODE" in
     echo "  Public visitors never receive platform admin automatically."
     echo "  Firewall: open 80/tcp, 443/tcp+udp, 7881/tcp, 7882/udp, 3478/tcp+udp, 49160-49200/udp"
     echo "  (cloud providers: also in the provider's security group / firewall panel)."
-    echo "  Before starting: set SMTP_HOST, SMTP_PORT, MAIL_FROM and SMTP_TLS/SMTP_STARTTLS in .env."
-    echo "  Registration requires email delivery; server mode does not start Mailpit."
+    echo "  Before starting: configure SMTP in .env, or use ACCOUNT_VERIFICATION_MODE=secret-word for a closed beta (docs/ACCOUNT-RECOVERY.md)."
+    echo "  Email mode requires delivery; secret-word mode works without mail. Server mode does not start Mailpit."
     ;;
 esac
 if [ "$OS" = "Darwin" ] && [ "$MODE" != "server" ]; then

@@ -1,6 +1,6 @@
 import { api, errorMessage } from '../api/client';
 import { getState, setState } from './app';
-import { firstTextChannel, refreshServer } from './actions';
+import { applyDm, firstTextChannel, refreshServer } from './actions';
 import { navigate,routerStore } from './router';
 import { toast } from './ui';
 import type { Channel, Dm, FullServer, Relation } from '../types';
@@ -64,7 +64,7 @@ export async function deleteChannel(ch: Channel): Promise<void> {
 
 export async function openDm(userId: string): Promise<void> {
   const dm = await attempt(() => api.post<Dm>('/dm', { recipientId: userId }), 'Не удалось открыть диалог');
-  if (dm) navigate({ name: 'dm', channelId: dm.id });
+  if (dm) {applyDm(dm);navigate({ name: 'dm', channelId: dm.id });}
 }
 
 export async function closeDm(id: string): Promise<void> {

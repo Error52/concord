@@ -10,7 +10,7 @@ const {api}=await import('../src/api/client');
 const {appStore,initialState,getState}=await import('../src/state/app');
 const {loadMessages,loadOlder,loadNewer,markRead,gateway,markNotificationsRead,clearNotifications,refreshServer}=await import('../src/state/actions');
 const {routerStore}=await import('../src/state/router');
-const {closeDm,sendFriendRequest,acceptFriend}=await import('../src/state/serverActions');
+const {openDm,closeDm,sendFriendRequest,acceptFriend}=await import('../src/state/serverActions');
 const channelId='00000000-0000-4000-8000-000000000001';
 const message=(id:string,content=id):Message=>({id,content,channelId,serverId:null,author:null,kind:'default',replyTo:null,attachments:[],embeds:[],reactions:[],mentionIds:[],mentionsEveryone:false,pinned:false,editedAt:null,createdAt:'2026-10-16T00:00:00Z'});
 function reset(items:Message[]=[],atLatest=true){routerStore.set({route:{name:'friends'}});appStore.set({...initialState,auth:'authed',me:{id:'me'} as SelfUser,channels:{[channelId]:{id:channelId,lastMessageId:items.at(-1)?.id} as Channel},messages:{[channelId]:{items,loading:false,atLatest,hasMoreBefore:true}}});}
@@ -117,6 +117,26 @@ test('late duplicate sends do not move the channel and read marker backwards',()
  reset([message('300')]);appStore.set({readStates:{[channelId]:{channelId,lastReadId:'300',mentionCount:1}}});
  event('message:new',{...message('200'),author:{id:'me'}});
  assert.equal(getState().channels[channelId]!.lastMessageId,'300');assert.equal(getState().readStates[channelId]!.lastReadId,'300');
+});
+
+test('opening a DM uses the HTTP result even when its gateway event is lost',async(t)=>{
+ reset();appStore.set({channels:{},dms:{}});const dm={id:channelId,type:'dm',recipients:[{id:'peer',username:'Peer'}],lastMessageId:'100'};
+ t.mock.method(api,'post',async()=>dm);await openDm('peer');
+ assert.equal(getState().dms[channelId]?.lastMessageId,'100');assert.equal(getState().channels[channelId]?.type,'dm');
+ assert.equal(getState().users.peer?.username,'Peer');assert.equal(routerStore.get().route.name,'dm');
+});
+
+test('an old DM snapshot cannot move a live message marker backwards',()=>{
+ reset();event('dm:create',{id:channelId,type:'dm',recipients:[],lastMessageId:'300'});
+ event('dm:create',{id:channelId,type:'dm',recipients:[],lastMessageId:'100'});
+ assert.equal(getState().dms[channelId]?.lastMessageId,'300');assert.equal(getState().channels[channelId]?.lastMessageId,'300');
+});
+
+test('a first message in an unknown DM retains its marker while metadata is loading',async(t)=>{
+ reset();appStore.set({channels:{},dms:{},messages:{}});const metadata=deferred<any>();t.mock.method(api,'get',()=>metadata.promise);
+ event('message:new',message('500'));
+ metadata.resolve({id:channelId,type:'dm',recipients:[],lastMessageId:'100'});await metadata.promise;await Promise.resolve();
+ assert.equal(getState().dms[channelId]?.lastMessageId,'500');assert.equal(getState().channels[channelId]?.lastMessageId,'500');
 });
 
 test('duplicate message delivery does not count a mention twice',()=>{

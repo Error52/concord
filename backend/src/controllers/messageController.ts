@@ -94,8 +94,9 @@ export function registerMessages(r: Router): void {
     // Rotation keeps downloads working; logout, password reset and explicit revocation invalidate them.
     const active=await queryOne<{id:string}>(`SELECT s.id FROM sessions s JOIN users u ON u.id=s.user_id
       WHERE s.user_id=$1 AND s.family_id=(SELECT family_id FROM sessions WHERE id=$2 AND user_id=$1)
-        AND s.revoked_at IS NULL AND s.expires_at>now() AND ($3::boolean=false OR u.email_verified_at IS NOT NULL) LIMIT 1`,
-      [claims.sub,claims.sid,config.REQUIRE_EMAIL_VERIFICATION]);
+        AND s.revoked_at IS NULL AND s.expires_at>now() AND ($3::boolean=false OR u.email_verified_at IS NOT NULL
+          OR ($4::boolean AND (u.local_verified_at IS NOT NULL OR u.is_platform_admin))) LIMIT 1`,
+      [claims.sub,claims.sid,config.REQUIRE_EMAIL_VERIFICATION,config.ACCOUNT_VERIFICATION_MODE==='secret-word']);
     if(!active)throw Errors.unauthorized();
     await attachments.serve(ctx.req, ctx.res, ctx.params.id ?? '', claims.sub, ctx.params.name === 'preview');
     return RAW;
@@ -137,6 +138,12 @@ export function registerMessages(r: Router): void {
   r.delete('/blocks/:id', {}, async (ctx) => friends.unblock(ctx.user.id, validate(S.uuid, ctx.params.id)));
 
   // ── GIFs (API key stays on the backend) ──
+  r.get('/gifs/local/:filename',{auth:'none'},async ctx=>{
+    const bytes=gifs.localGifBytes(ctx.params.filename??'');
+    if(!bytes)throw Errors.notFound('GIF');
+    ctx.res.writeHead(200,{'Content-Type':'image/gif','Content-Length':bytes.length,'Cache-Control':'public, max-age=31536000, immutable'});
+    ctx.res.end(bytes);return RAW;
+  });
   const gifLimit = { name: 'gif', max: 60, windowSec: 60, by: 'user' as const };
   const locale = (q: URLSearchParams): string => (/^[a-z]{2}(_[A-Z]{2})?$/.test(q.get('locale') ?? '') ? q.get('locale')! : 'ru_RU');
   r.get('/gifs/trending', { rateLimit: gifLimit }, async (ctx) => gifs.trending(ctx.query.get('pos'), locale(ctx.query)));

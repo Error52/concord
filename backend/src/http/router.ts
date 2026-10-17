@@ -215,7 +215,8 @@ export class Router {
       const user = mode === 'none' ? null : await this.authenticate(req);
       if (mode === 'required' && !user) throw Errors.unauthorized();
       if (user && config.REQUIRE_EMAIL_VERIFICATION && user.emailVerified === false && !opts.allowUnverified && route.segments[0] !== 'auth') {
-        throw new AppError(403, 'EMAIL_UNVERIFIED', 'Подтвердите почту, чтобы завершить регистрацию');
+        throw new AppError(403,config.ACCOUNT_VERIFICATION_MODE==='secret-word'?'ACCOUNT_UNVERIFIED':'EMAIL_UNVERIFIED',
+          config.ACCOUNT_VERIFICATION_MODE==='secret-word'?'Задайте ключевое слово, чтобы завершить регистрацию':'Подтвердите почту, чтобы завершить регистрацию');
       }
 
       if (opts.rateLimit) await rateLimit(opts.rateLimit, opts.rateLimit.by === 'user' && user ? user.id : ip);

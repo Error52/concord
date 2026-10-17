@@ -39,6 +39,15 @@ function userIdFromAccess(token: string): string {
 
 export function registerAuth(r: Router): void {
   const strict = { name: 'auth', max: 10, windowSec: 60 };
+  r.get('/auth/options',{auth:'none'},()=>({verificationMode:config.ACCOUNT_VERIFICATION_MODE,recoveryWordMinLength:12,recoveryWordMaxLength:256}));
+  r.post('/auth/recovery-word/reset',{auth:'none',csrf:true,rateLimit:{name:'recovery-word-ip',max:5,windowSec:900}},async ctx=>{
+    const body=validate(z.object({identifier:z.string().trim().min(2).max(254),recoveryWord:S.recoveryWord,newPassword:S.password,newRecoveryWord:S.recoveryWord,totpCode:z.string().regex(/^\d{6}$/).optional()}),ctx.body);
+    await auth.resetByRecoveryWord(body);return new Reply(200,{ok:true},{'Set-Cookie':clearCookies()});
+  });
+  r.post('/auth/recovery-word',{rateLimit:{name:'recovery-word-setup',max:5,windowSec:900,by:'user'}},async ctx=>{
+    const body=validate(z.object({currentPassword:z.string().min(1).max(128),recoveryWord:S.recoveryWord,oldRecoveryWord:S.recoveryWord.optional(),totpCode:z.string().regex(/^\d{6}$/).optional()}),ctx.body);
+    await auth.setRecoveryWord(ctx.user.id,ctx.user.sessionId,body);return {ok:true};
+  });
 
   r.post('/auth/register', { auth: 'none', csrf: true, rateLimit: { name: 'register', max: 5, windowSec: 3600 } }, async (ctx) => {
     const body = validate(S.register, ctx.body);
@@ -48,7 +57,7 @@ export function registerAuth(r: Router): void {
 
   r.post('/auth/login', { auth: 'none', csrf: true, rateLimit: strict }, async (ctx) => {
     const body = validate(S.login, ctx.body);
-    const res = await auth.login(body.email, body.password, client(ctx));
+    const res = await auth.login(body.identifier??body.email!, body.password, client(ctx));
     if (res.kind === 'mfa') return { mfaRequired: true, ticket: res.ticket };
     return new Reply(200, { user: res.user, accessToken: res.tokens.accessToken }, { 'Set-Cookie': sessionCookies(res.user.id, res.tokens) });
   });
@@ -80,7 +89,7 @@ export function registerAuth(r: Router): void {
     return {ok:true};
   });
   r.get('/auth/email/demo', {rateLimit:{name:'demo-mail',max:30,windowSec:60,by:'user'}}, async(ctx)=>{
-    if(!config.DEMO_MAILBOX)throw Errors.notFound('Демопочта');
+    if(!config.DEMO_MAILBOX||config.ACCOUNT_VERIFICATION_MODE!=='email')throw Errors.notFound('Демопочта');
     // No address/ID parameter, no reset links, no HTML. Only this authenticated user's live verification link.
     const row=await queryOne<{text_body:string;html_body:string}>(`SELECT e.text_body,e.html_body FROM outbound_emails e
       JOIN users u ON u.id=e.user_id

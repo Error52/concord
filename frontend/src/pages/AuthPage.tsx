@@ -5,10 +5,17 @@ import { getState, useApp } from '../state/app';
 import { navigate, type Route } from '../state/router';
 import { toast } from '../state/ui';
 import { ProfileCard } from '../components/profile/ProfileCard';
+import { RecoveryWordForm } from '../components/auth/RecoveryWordForm';
 import { PRESET_THEMES } from '../utils/color';
-import type { SelfUser, User } from '../types';
+import { normalizeRecoveryWord, recoveryWordError } from '../utils/recoveryWord';
+import type { AuthOptions, SelfUser, User } from '../types';
 
 type AuthResponse = { user: SelfUser; accessToken: string } | { mfaRequired: true; ticket: string };
+type AuthConfig={options:AuthOptions|null;error:string;retry:()=>void};
+
+function OptionsNotice({config}:{config:AuthConfig}) {
+  return config.error?<div><p className="field-error" role="alert">{config.error}</p><button type="button" className="link-btn" onClick={config.retry}>Повторить загрузку настроек</button></div>:!config.options?<p className="field-hint" role="status">Загружаем настройки регистрации…</p>:null;
+}
 
 const BANNER_COLORS = ['#7c6cff', '#5865f2', '#3b82f6', '#14b8a6', '#22c55e', '#f59e0b', '#f97316', '#ef4444', '#ec4899', '#64748b'];
 
@@ -35,21 +42,24 @@ function Login() {
   const [code, setCode] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const pending=useRef(false);
 
   const submit = async (e: FormEvent) => {
     e.preventDefault();
+    if(pending.current)return;pending.current=true;
     setBusy(true);
     setError(null);
     try {
       const res = ticket
         ? await api.post<AuthResponse>('/auth/mfa', { ticket, code })
-        : await api.post<AuthResponse>('/auth/login', { email, password });
+        : await api.post<AuthResponse>('/auth/login', { identifier:email, password });
       if ('mfaRequired' in res) setTicket(res.ticket);
       else onAuthenticated(res.user, res.accessToken);
     } catch (err) {
       setError(errorMessage(err));
       if (err instanceof ApiError && err.code === 'MFA_EXPIRED') setTicket(null);
     } finally {
+      pending.current=false;
       setBusy(false);
     }
   };
@@ -68,8 +78,8 @@ function Login() {
         ) : (
           <>
             <label className="field">
-              <span className="field-label">Email</span>
-              <input className="input" type="email" autoComplete="email" value={email} onChange={(e) => setEmail(e.target.value)} required autoFocus />
+              <span className="field-label">Email или имя пользователя</span>
+              <input className="input" autoComplete="username" value={email} onChange={(e) => setEmail(e.target.value)} required autoFocus />
             </label>
             <label className="field">
               <span className="field-label">Пароль</span>
@@ -95,14 +105,16 @@ function Login() {
   );
 }
 
-function Register() {
-  const [form, setForm] = useState({ username: '', displayName: '', email: '', password: '', confirm: '' });
+function Register({config}:{config:AuthConfig}) {
+  const [form, setForm] = useState({ username: '', displayName: '', email: '', password: '', confirm: '',recoveryWord:'',recoveryConfirm:'' });
   const [bannerColor, setBannerColor] = useState(BANNER_COLORS[0]!);
   const [preset, setPreset] = useState('default');
   const [avatar, setAvatar] = useState<File | null>(null);
   const [banner, setBanner] = useState<File | null>(null);
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [busy, setBusy] = useState(false);
+  const pending=useRef(false);
+  const wordMode=config.options?.verificationMode==='secret-word';
   const set = (k: keyof typeof form) => (e: ChangeEvent<HTMLInputElement>) => setForm((f) => ({ ...f, [k]: e.target.value }));
 
   const avatarUrl = useObjectUrl(avatar);
@@ -126,13 +138,15 @@ function Register() {
 
   const submit = async (e: FormEvent) => {
     e.preventDefault();
-    if (busy) return;
+    if (pending.current || !config.options) return;
     const local: Record<string, string> = {};
     if (form.password !== form.confirm) local.confirm = 'Пароли не совпадают';
     if (form.password.length < 8) local.password = 'Пароль — минимум 8 символов';
+    if(wordMode){const invalid=recoveryWordError(form.recoveryWord,form.recoveryConfirm,form.password,config.options.recoveryWordMinLength,config.options.recoveryWordMaxLength);if(invalid)local.recoveryWord=invalid;}
     for (const f of [avatar, banner]) if (f && f.size > 8 * 1024 * 1024) local.files = 'Изображение больше 8 МБ';
     setErrors(local);
     if (Object.keys(local).length) return;
+    pending.current=true;
     setBusy(true);
     try {
       const res = await api.post<{ user: SelfUser; accessToken: string }>('/auth/register', {
@@ -143,6 +157,7 @@ function Register() {
         bannerColor,
         accentColor: bannerColor,
         theme: { preset },
+        ...(wordMode?{recoveryWord:form.recoveryWord}:{}),
       });
       setAccessToken(res.accessToken);
       // Images are uploaded after the account exists; failures don't block sign-up.
@@ -161,11 +176,12 @@ function Register() {
       else if (!Object.keys(fe).length) fe.form = errorMessage(err);
       setErrors(fe);
     } finally {
+      pending.current=false;
       setBusy(false);
     }
   };
 
-  const err = (k: string) => errors[k] && <span className="field-error">{errors[k]}</span>;
+  const err = (k: string) => errors[k] && <span id={`register-${k}-error`} className="field-error">{errors[k]}</span>;
 
   return (
     <form className="auth-card wide" onSubmit={submit}>
@@ -177,7 +193,7 @@ function Register() {
           <div className="form-grid">
             <label className="field">
               <span className="field-label">Имя пользователя</span>
-              <input className={`input${errors.username ? ' invalid' : ''}`} value={form.username} onChange={set('username')} autoComplete="username" required minLength={2} maxLength={32} pattern="[a-zA-Z0-9_.]+" title="Латиница, цифры, «_» и «.»" />
+              <input className={`input${errors.username ? ' invalid' : ''}`} value={form.username} onChange={set('username')} autoComplete="username" aria-label="Имя пользователя" aria-describedby={errors.username?'register-username-error':undefined} required minLength={2} maxLength={32} pattern="[a-zA-Z0-9_.]+" title="Латиница, цифры, «_» и «.»" />
               {err('username')}
             </label>
             <label className="field">
@@ -187,21 +203,30 @@ function Register() {
           </div>
           <label className="field">
             <span className="field-label">Email</span>
-            <input className={`input${errors.email ? ' invalid' : ''}`} type="email" value={form.email} onChange={set('email')} autoComplete="email" required />
+            <input className={`input${errors.email ? ' invalid' : ''}`} type="email" value={form.email} onChange={set('email')} autoComplete="email" aria-label="Email" aria-describedby={wordMode?'registration-email-note':undefined} required />
             {err('email')}
+            {wordMode&&<span id="registration-email-note" className="field-hint">Контактный адрес. Для входа подойдёт и имя пользователя; регистрация не подтверждает владение почтой.</span>}
           </label>
           <div className="form-grid">
             <label className="field">
               <span className="field-label">Пароль</span>
-              <input className={`input${errors.password ? ' invalid' : ''}`} type="password" value={form.password} onChange={set('password')} autoComplete="new-password" minLength={8} maxLength={128} required />
+              <input className={`input${errors.password ? ' invalid' : ''}`} type="password" value={form.password} onChange={set('password')} autoComplete="new-password" aria-label="Пароль" aria-describedby={errors.password?'register-password-error':undefined} minLength={8} maxLength={128} required />
               {err('password')}
             </label>
             <label className="field">
               <span className="field-label">Повторите пароль</span>
-              <input className={`input${errors.confirm ? ' invalid' : ''}`} type="password" value={form.confirm} onChange={set('confirm')} autoComplete="new-password" required />
+              <input className={`input${errors.confirm ? ' invalid' : ''}`} type="password" value={form.confirm} onChange={set('confirm')} autoComplete="new-password" aria-label="Повторите пароль" aria-describedby={errors.confirm?'register-confirm-error':undefined} required />
               {err('confirm')}
             </label>
           </div>
+          {wordMode&&<>
+            <div className="form-grid">
+              <label className="field"><span className="field-label">Секретное слово</span><input className={`input${errors.recoveryWord?' invalid':''}`} type="password" autoComplete="off" value={form.recoveryWord} onChange={set('recoveryWord')} minLength={config.options?.recoveryWordMinLength??12} maxLength={config.options?.recoveryWordMaxLength??256} required/></label>
+              <label className="field"><span className="field-label">Повторите секретное слово</span><input className="input" type="password" autoComplete="off" value={form.recoveryConfirm} onChange={set('recoveryConfirm')} maxLength={config.options?.recoveryWordMaxLength??256} required/></label>
+            </div>
+            {err('recoveryWord')}
+            <p className="field-hint">Минимум 12 символов. Используйте слово или фразу, отличающиеся от пароля, и сохраните отдельно: они нужны для восстановления доступа. Регистр букв и лишние пробелы не учитываются.</p>
+          </>}
           <div className="form-grid">
             <label className="field">
               <span className="field-label">Аватар</span>
@@ -232,7 +257,8 @@ function Register() {
             </div>
           </div>
           {err('form')}
-          <button className="btn btn-primary btn-block" disabled={busy}>
+          <OptionsNotice config={config}/>
+          <button className="btn btn-primary btn-block" disabled={busy||!config.options}>
             {busy ? 'Создаём…' : 'Продолжить'}
           </button>
         </div>
@@ -251,37 +277,62 @@ function Register() {
   );
 }
 
-function Forgot() {
+function Forgot({config}:{config:AuthConfig}) {
   const [email, setEmail] = useState('');
   const [sent, setSent] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [recovery,setRecovery]=useState({word:'',password:'',confirm:'',nextWord:'',repeat:'',totp:''});
+  const pending=useRef(false),wordMode=config.options?.verificationMode==='secret-word';
+  const setRecoveryField=(key:keyof typeof recovery)=>(e:ChangeEvent<HTMLInputElement>)=>setRecovery(value=>({...value,[key]:e.target.value}));
   const submit = async (e: FormEvent) => {
     e.preventDefault();
-    setBusy(true);
+    if(pending.current || !config.options)return;
+    if(wordMode){
+      if(recovery.password!==recovery.confirm){setError('Пароли не совпадают');return;}
+      const invalid=recoveryWordError(recovery.nextWord,recovery.repeat,recovery.password,config.options.recoveryWordMinLength,config.options.recoveryWordMaxLength);
+      if(invalid){setError(invalid);return;}
+      if(normalizeRecoveryWord(recovery.word)===normalizeRecoveryWord(recovery.nextWord)){setError('Новое секретное слово должно отличаться от текущего');return;}
+    }
+    pending.current=true;setBusy(true);setError(null);
     try {
-      await api.post('/auth/password/forgot', { email });
-      setSent(true);
+      if(wordMode){
+        await api.post('/auth/recovery-word/reset',{identifier:email,recoveryWord:recovery.word,newPassword:recovery.password,newRecoveryWord:recovery.nextWord,...(recovery.totp?{totpCode:recovery.totp}:{})});
+        setRecovery({word:'',password:'',confirm:'',nextWord:'',repeat:'',totp:''});
+        await logout();toast('Пароль и секретное слово изменены. Войдите с новым паролем.','success');navigate({name:'login'},true);
+      }else{
+        await api.post('/auth/password/forgot', { email });setSent(true);
+      }
     } catch (err) {
       setError(errorMessage(err));
     } finally {
-      setBusy(false);
+      pending.current=false;setBusy(false);
     }
   };
   return (
     <form className="auth-card" onSubmit={submit}>
       <Brand />
       <h1>Восстановление пароля</h1>
-      <p className="auth-sub">{sent ? 'Если такой аккаунт существует, мы отправили письмо со ссылкой. Ссылка действует 1 час.' : 'Укажите email — пришлём ссылку для сброса.'}</p>
-      {!sent && (
+      <p className="auth-sub">{wordMode?'Введите сохранённое секретное слово и задайте новый пароль и новое секретное слово. Все прежние сеансы завершатся.':!config.options?'Загружаем способ восстановления…':sent ? 'Если такой аккаунт существует, мы отправили письмо со ссылкой. Ссылка действует 1 час.' : 'Укажите email — пришлём ссылку для сброса.'}</p>
+      <OptionsNotice config={config}/>
+      {!sent && config.options && (
         <div className="auth-form">
           <label className="field">
-            <span className="field-label">Email</span>
-            <input className="input" type="email" value={email} onChange={(e) => setEmail(e.target.value)} required autoFocus />
+            <span className="field-label">{wordMode?'Email или имя пользователя':'Email'}</span>
+            <input className="input" type={wordMode?'text':'email'} autoComplete={wordMode?'username':'email'} value={email} onChange={(e) => setEmail(e.target.value)} required autoFocus disabled={busy}/>
           </label>
-          {error && <div className="field-error">{error}</div>}
+          {wordMode&&<>
+            <label className="field"><span className="field-label">Секретное слово</span><input className="input" type="password" autoComplete="off" maxLength={256} required value={recovery.word} onChange={setRecoveryField('word')} disabled={busy}/></label>
+            <label className="field"><span className="field-label">Новый пароль</span><input className="input" type="password" autoComplete="new-password" minLength={8} maxLength={128} required value={recovery.password} onChange={setRecoveryField('password')} disabled={busy}/></label>
+            <label className="field"><span className="field-label">Повторите пароль</span><input className="input" type="password" autoComplete="new-password" maxLength={128} required value={recovery.confirm} onChange={setRecoveryField('confirm')} disabled={busy}/></label>
+            <label className="field"><span className="field-label">Новое секретное слово</span><input className="input" type="password" autoComplete="off" minLength={config.options.recoveryWordMinLength} maxLength={config.options.recoveryWordMaxLength} required value={recovery.nextWord} onChange={setRecoveryField('nextWord')} disabled={busy}/></label>
+            <label className="field"><span className="field-label">Повторите секретное слово</span><input className="input" type="password" autoComplete="off" maxLength={config.options.recoveryWordMaxLength} required value={recovery.repeat} onChange={setRecoveryField('repeat')} disabled={busy}/></label>
+            <p className="field-hint">Сохраните новое секретное слово отдельно от пароля. Прежнее слово больше не подойдёт. Минимум 12 символов; регистр букв и лишние пробелы не учитываются.</p>
+            <label className="field"><span className="field-label">Код 2FA, если включена</span><input className="input" inputMode="numeric" autoComplete="one-time-code" pattern="[0-9]{6}" maxLength={6} value={recovery.totp} onChange={e=>setRecovery(value=>({...value,totp:e.target.value.replace(/\D/g,'')}))} disabled={busy}/></label>
+          </>}
+          {error && <div className="field-error" role="alert">{error}</div>}
           <button className="btn btn-primary btn-block" disabled={busy}>
-            Отправить ссылку
+            {busy?'Проверяем…':wordMode?'Восстановить доступ':'Отправить ссылку'}
           </button>
         </div>
       )}
@@ -348,6 +399,18 @@ function useObjectUrl(file:File|null):string|null {
 }
 
 export function VerificationPending() {
+  const me=useApp(s=>s.me);
+  if(!me)return null;
+  if(me.verificationMode==='secret-word')return <div className="auth-card">
+    <Brand/><h1>Завершите регистрацию</h1>
+    <p className="auth-sub">Задайте секретное слово для восстановления доступа. Подтверждение по почте не требуется.</p>
+    {me.recoveryWordAllowed?<RecoveryWordForm me={me} className="auth-form" onSaved={(user,token)=>{onAuthenticated(user,token);toast('Аккаунт готов','success');}}/>:<p className="field-hint">Для восстановления доступа администратора обратитесь к владельцу сервиса.</p>}
+    <p className="auth-alt"><button type="button" className="link-btn" onClick={()=>void logout()}>Выйти и использовать другой аккаунт</button></p>
+  </div>;
+  return <EmailVerificationPending/>;
+}
+
+function EmailVerificationPending() {
   const me=useApp(s=>s.me);
   const [busy,setBusy]=useState(false),[error,setError]=useState(''),[remaining,setRemaining]=useState(0);
   const checking=useRef(false),retryAt=useRef(0);
@@ -435,9 +498,20 @@ function VerifyEmail({token}:{token:string}) {
 }
 
 export function AuthPage({ route }: { route: Route }) {
+  const [options,setOptions]=useState<AuthOptions|null>(null),[optionsError,setOptionsError]=useState(''),[attempt,setAttempt]=useState(0);
+  useEffect(()=>{
+    if(route.name!=='register' && route.name!=='forgot')return;
+    let active=true;setOptions(null);setOptionsError('');
+    void api.get<AuthOptions>('/auth/options').then(value=>{
+      if(!['email','secret-word'].includes(value.verificationMode) || !Number.isInteger(value.recoveryWordMinLength) || !Number.isInteger(value.recoveryWordMaxLength) || value.recoveryWordMinLength<1 || value.recoveryWordMaxLength<value.recoveryWordMinLength)throw new Error('Invalid registration options');
+      if(active)setOptions(value);
+    }).catch(err=>{if(active)setOptionsError(errorMessage(err,'Не удалось загрузить настройки регистрации. Повторите попытку.'));});
+    return ()=>{active=false;};
+  },[route.name,attempt]);
+  const config:AuthConfig={options,error:optionsError,retry:()=>setAttempt(value=>value+1)};
   return (
     <div className="auth-shell">
-      {route.name === 'register' ? <Register /> : route.name === 'forgot' ? <Forgot /> : route.name === 'reset' ? <Reset token={route.token} /> : route.name === 'verify' ? <VerifyEmail token={route.token} /> : <Login />}
+      {route.name === 'register' ? <Register config={config}/> : route.name === 'forgot' ? <Forgot config={config}/> : route.name === 'reset' ? <Reset token={route.token} /> : route.name === 'verify' ? <VerifyEmail token={route.token} /> : <Login />}
     </div>
   );
 }

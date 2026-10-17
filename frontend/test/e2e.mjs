@@ -5,13 +5,17 @@
 // the fake device), and — when an SFU is reachable — joining a voice channel.
 import { chromium } from 'playwright';
 import assert from 'node:assert/strict';
-import { mkdir } from 'node:fs/promises';
+import { mkdir, writeFile } from 'node:fs/promises';
 import { mailLink } from './mailbox.mjs';
 
 const BASE = process.env.BASE_URL ?? 'http://localhost';
 const SHOTS = process.env.SHOTS_DIR ?? 'test/screenshots';
 const EXPECT_VOICE = process.env.EXPECT_VOICE === '1';
-const run = Date.now().toString(36).slice(-5);
+const run = process.env.E2E_RUN ?? Date.now().toString(36).slice(-5);
+const mode = process.env.AUTH_MODE ?? (await (await fetch(`${BASE}/api/auth/options`)).json()).verificationMode;
+assert.ok(['email','secret-word'].includes(mode));
+const wordMode=mode==='secret-word';
+const ignoreHTTPSErrors=process.env.ALLOW_SELF_SIGNED==='1';
 await mkdir(SHOTS, { recursive: true });
 
 const browser = await chromium.launch({
@@ -19,6 +23,8 @@ const browser = await chromium.launch({
   args: ['--use-fake-ui-for-media-stream', '--use-fake-device-for-media-stream', '--autoplay-policy=no-user-gesture-required'],
 });
 const results = [];
+const pageErrors=[];
+const fixtures=[];
 async function step(name, fn) {
   const t = Date.now();
   try {
@@ -31,25 +37,30 @@ async function step(name, fn) {
 }
 
 async function newUser(name) {
-  const ctx = await browser.newContext({ viewport: { width: 1440, height: 900 }, permissions: ['microphone', 'camera'], ignoreHTTPSErrors: true });
+  const ctx = await browser.newContext({ viewport: { width: 1440, height: 900 }, permissions: ['microphone', 'camera'], ignoreHTTPSErrors });
   await ctx.addInitScript(()=>{const create=URL.createObjectURL.bind(URL),revoke=URL.revokeObjectURL.bind(URL);window.__signupPreviews=new Set();URL.createObjectURL=b=>{const u=create(b);window.__signupPreviews.add(u);return u;};URL.revokeObjectURL=u=>{window.__signupPreviews.delete(u);revoke(u);};});
   const page = await ctx.newPage();
-  page.on('pageerror', (e) => console.error(`[${name}] pageerror`, e.message));
+  page.on('pageerror', (e) => pageErrors.push(e.message.slice(0,200)));
   await page.goto(`${BASE}/register`);
   await page.getByLabel('Имя пользователя').fill(name);
   await page.getByLabel('Отображаемое имя').fill(name.toUpperCase());
   await page.getByLabel('Email').fill(`${name}@e2e.test`);
   await page.getByLabel('Пароль', { exact: true }).fill('password123');
   await page.getByLabel('Повторите пароль').fill('password123');
+  if(wordMode){await page.getByLabel('Секретное слово',{exact:true}).fill(`cosmic violet owl ${name}`);await page.getByLabel('Повторите секретное слово',{exact:true}).fill(`cosmic violet owl ${name}`);}
   await page.getByLabel('Аватар',{exact:true}).setInputFiles('test/fixtures/avatar.png');
   await page.waitForFunction(()=>window.__signupPreviews.size===1);
   await page.getByRole('button', { name: 'Продолжить' }).click();
+  if(!wordMode){
   await page.getByRole('heading',{name:'Подтвердите почту',exact:true}).waitFor();
   await page.waitForFunction(()=>window.__signupPreviews.size===0);
   const verification=await mailLink(`${name}@e2e.test`,'подтвердите почту','/verify-email');
   await page.goto(verification);
   await page.getByRole('button',{name:'Подтвердить почту',exact:true}).click();
+  }
   await page.getByText('Друзья').first().waitFor();
+  await page.waitForFunction(()=>window.__signupPreviews.size===0);
+  fixtures.push(name);
   return { ctx, page };
 }
 
@@ -59,7 +70,7 @@ try {
   const nameB = `bravo${run}`;
 
   await step('guest is redirected to login; registration validates passwords', async () => {
-    const ctx = await browser.newContext({ ignoreHTTPSErrors: true });
+    const ctx = await browser.newContext({ ignoreHTTPSErrors });
     const page = await ctx.newPage();
     await page.goto(`${BASE}/channels/@me`);
     await page.getByRole('heading', { name: 'С возвращением!' }).waitFor();
@@ -69,6 +80,7 @@ try {
     await page.getByLabel('Email').fill('x@e2e.test');
     await page.getByLabel('Пароль', { exact: true }).fill('password123');
     await page.getByLabel('Повторите пароль').fill('different1');
+    if(wordMode){await page.getByLabel('Секретное слово',{exact:true}).fill('cosmic violet test owl');await page.getByLabel('Повторите секретное слово',{exact:true}).fill('cosmic violet test owl');}
     await page.getByRole('button', { name: 'Продолжить' }).click();
     await page.getByText('Пароли не совпадают').waitFor();
     await page.screenshot({ path: `${SHOTS}/02-register.png` });
@@ -81,7 +93,7 @@ try {
   });
 
   await step('wrong password shows an error', async () => {
-    const ctx = await browser.newContext({ ignoreHTTPSErrors: true });
+    const ctx = await browser.newContext({ ignoreHTTPSErrors });
     const page = await ctx.newPage();
     await page.goto(`${BASE}/login`);
     await page.getByLabel('Email').fill(`${nameA}@e2e.test`);
@@ -264,7 +276,7 @@ try {
 
   if (process.env.SEEDED === '1') {
     await step('seed data: Demo Server, roles and badges on the profile card', async () => {
-      const ctx = await browser.newContext({ viewport: { width: 1440, height: 900 }, ignoreHTTPSErrors: true });
+      const ctx = await browser.newContext({ viewport: { width: 1440, height: 900 }, ignoreHTTPSErrors });
       const page = await ctx.newPage();
       await page.goto(`${BASE}/login`);
       await page.getByLabel('Email').fill('alice@concord.local');
@@ -280,7 +292,7 @@ try {
   }
 
   await step('mobile layout: drawer navigation', async () => {
-    const ctx = await browser.newContext({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true, ignoreHTTPSErrors: true });
+    const ctx = await browser.newContext({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true, ignoreHTTPSErrors });
     const page = await ctx.newPage();
     await page.goto(`${BASE}/login`);
     await page.getByLabel('Email').fill(`${nameB}@e2e.test`);
@@ -294,5 +306,7 @@ try {
   });
 } finally {
   for (const r of results) console.log(r.join('  '));
+  if(process.env.E2E_RESULTS)await writeFile(process.env.E2E_RESULTS,JSON.stringify({verificationMode:mode,checks:results,errors:pageErrors,fixtures},null,2)+'\n');
   await browser.close();
 }
+assert.deepEqual(pageErrors,[]);

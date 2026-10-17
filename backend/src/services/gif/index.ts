@@ -4,11 +4,14 @@ import { Errors } from '../../http/errors.js';
 import { log } from '../../logger.js';
 import { GiphyProvider } from './giphy.js';
 import { TenorProvider } from './tenor.js';
+import { LocalGifProvider } from './local.js';
+export {localGifBytes} from './local.js';
 import type { GifCategory, GifPage, GifProvider } from './types.js';
 import type { EmbedDTO } from '../../models/dto.js';
 
 function createProvider(): GifProvider | null {
-  if (config.GIF_PROVIDER === 'none' || !config.GIF_API_KEY) return null;
+  if (config.GIF_PROVIDER === 'none') return null;
+  if(config.GIF_PROVIDER==='local'||!config.GIF_API_KEY)return new LocalGifProvider(config.APP_URL);
   return config.GIF_PROVIDER === 'tenor' ? new TenorProvider(config.GIF_API_KEY) : new GiphyProvider(config.GIF_API_KEY);
 }
 
@@ -20,6 +23,7 @@ function requireProvider(): GifProvider {
 }
 
 async function cached<T>(key: string, ttlSec: number, fn: () => Promise<T>): Promise<T> {
+  if(provider?.name==='local')return fn();
   const hit = await redis.get(key);
   if (hit) return JSON.parse(hit) as T;
   let value: T;
@@ -56,6 +60,8 @@ export async function categories(locale: string): Promise<GifCategory[]> {
 /** Accepts a GIF embed from the client only if its media comes from the active provider's CDN. */
 export function validateEmbed(input: { url: string; previewUrl: string; width: number; height: number; title?: string }): EmbedDTO {
   const p = requireProvider();
+  const local=new LocalGifProvider(config.APP_URL).byUrl(input.url);
+  if(local&&input.previewUrl===local.previewUrl)return {type:'gif',url:local.url,previewUrl:local.previewUrl,width:local.width,height:local.height,title:local.title,provider:'local'};
   for (const u of [input.url, input.previewUrl]) {
     let host: string;
     try {

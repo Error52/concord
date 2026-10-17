@@ -15,6 +15,7 @@ export const username = z
 
 export const password = z.string().min(8, 'Пароль — минимум 8 символов').max(128, 'Пароль — максимум 128 символов');
 export const email = z.string().trim().email('Некорректный email').max(254);
+export const recoveryWord=z.string().max(256);
 
 export const profileTheme = z.object({
   preset: z.string().max(32),
@@ -29,13 +30,15 @@ export const register = z.object({
   username,
   email,
   password,
+  recoveryWord:recoveryWord.optional(),
   displayName: z.string().trim().max(32).optional(),
   bannerColor: hexColor.optional(),
   accentColor: hexColor.optional(),
   theme: profileTheme.optional(),
 });
 
-export const login = z.object({ email, password: z.string().min(1).max(128) });
+export const login = z.object({ email:email.optional(),identifier:z.string().trim().min(2).max(254).optional(),password: z.string().min(1).max(128) })
+  .refine(v=>!!(v.identifier||v.email),'Укажите имя пользователя или email');
 export const mfa = z.object({ ticket: z.string().min(10), code: z.string().regex(/^\d{6}$/, 'Код — 6 цифр') });
 
 export const profilePatch = z.object({

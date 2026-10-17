@@ -98,7 +98,7 @@ for p in "$TCP_MEDIA" "$UDP_MEDIA" "$HTTPS_BIND" "$PUBLIC_HTTPS"; do
   case "$p" in ''|*[!0-9]*) die "Некорректный порт в .env" ;; esac
   [ "$p" -gt 0 ] && [ "$p" -lt 65536 ] || die "Порт должен быть от 1 до 65535"
 done
-if [ "$MODE" = server ] && [ "$(setting REQUIRE_EMAIL_VERIFICATION)" != false ] && [ "$(setting REQUIRE_EMAIL_VERIFICATION)" != 0 ] && [ "$(setting DEMO_MAILBOX)" != true ] && [ "$(setting DEMO_MAILBOX)" != 1 ]; then
+if [ "$MODE" = server ] && [ "$(setting ACCOUNT_VERIFICATION_MODE)" != secret-word ] && [ "$(setting REQUIRE_EMAIL_VERIFICATION)" != false ] && [ "$(setting REQUIRE_EMAIL_VERIFICATION)" != 0 ] && [ "$(setting DEMO_MAILBOX)" != true ] && [ "$(setting DEMO_MAILBOX)" != 1 ]; then
   SMTP="$(setting SMTP_HOST)"
   [ -n "$SMTP" ] && [ "$SMTP" != mailpit ] || die "Настройте SMTP_HOST, SMTP_PORT, MAIL_FROM и SMTP_TLS/SMTP_STARTTLS в .env, затем повторите установку. Для локальной демо-почты используйте --lan."
 fi

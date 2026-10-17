@@ -66,38 +66,40 @@ function LevelMeter({ level, threshold }: { level: number; threshold: number }) 
   );
 }
 
-function playTestSound(sinkId: string): void {
+function playTestSound(sinkId: string): () => void {
   const ctx = new AudioContext();
-  const dest = ctx.createMediaStreamDestination();
-  const notes = [523.25, 659.25, 783.99, 1046.5];
-  notes.forEach((f, i) => {
-    const o = ctx.createOscillator();
-    const g = ctx.createGain();
-    o.frequency.value = f;
-    const t = ctx.currentTime + i * 0.18;
-    g.gain.setValueAtTime(0, t);
-    g.gain.linearRampToValueAtTime(0.25, t + 0.02);
-    g.gain.exponentialRampToValueAtTime(0.001, t + 0.35);
-    o.connect(g).connect(dest);
-    o.start(t);
-    o.stop(t + 0.4);
-  });
-  const audio = new Audio();
-  audio.srcObject = dest.stream;
-  audio.volume = Math.min(1, settingsStore.get().outputVolume);
-  const play = () => audio.play().catch(() => toast('Браузер заблокировал воспроизведение', 'error'));
-  if (sinkId !== 'default') {
-    if ('setSinkId' in audio) {
-      void (audio as HTMLAudioElement & { setSinkId(id: string): Promise<void> }).setSinkId(sinkId).then(play, () => {
-        toast('Не удалось выбрать устройство вывода — звук идёт в устройство по умолчанию', 'error');
-        void play();
+  let dest:MediaStreamAudioDestinationNode|null=null,audio:HTMLAudioElement|null=null,timer:ReturnType<typeof setTimeout>|undefined;
+  let stopped=false;
+  const oscillators:OscillatorNode[]=[],gains:GainNode[]=[];
+  const stop=()=>{
+    if(stopped)return;stopped=true;clearTimeout(timer);
+    if(audio){audio.pause();audio.srcObject=null;}
+    dest?.stream.getTracks().forEach(track=>track.stop());
+    for(const oscillator of oscillators){try{oscillator.stop();}catch{/* already ended */}oscillator.disconnect();}
+    gains.forEach(gain=>gain.disconnect());dest?.disconnect();
+    void ctx.close().catch(()=>undefined);
+  };
+  try{
+    dest=ctx.createMediaStreamDestination();
+    const notes=[523.25,659.25,783.99,1046.5];
+    notes.forEach((frequency,index)=>{
+      const oscillator=ctx.createOscillator(),gain=ctx.createGain();oscillators.push(oscillator);gains.push(gain);
+      oscillator.frequency.value=frequency;
+      const time=ctx.currentTime+index*0.18;
+      gain.gain.setValueAtTime(0,time);gain.gain.linearRampToValueAtTime(0.25,time+0.02);gain.gain.exponentialRampToValueAtTime(0.001,time+0.35);
+      oscillator.connect(gain).connect(dest!);oscillator.start(time);oscillator.stop(time+0.4);
+    });
+    audio=new Audio();audio.srcObject=dest.stream;audio.volume=Math.min(1,settingsStore.get().outputVolume);
+    const play=async()=>{if(stopped)return;try{await audio!.play();}catch{if(!stopped){toast('Браузер заблокировал воспроизведение','error');stop();}}};
+    if(sinkId!=='default'){
+      if('setSinkId' in audio)void (audio as HTMLAudioElement & {setSinkId(id:string):Promise<void>}).setSinkId(sinkId).then(play,()=>{
+        if(stopped)return;toast('Не удалось выбрать устройство вывода — звук идёт в устройство по умолчанию','error');void play();
       });
-    } else {
-      toast('Браузер не поддерживает выбор устройства вывода (setSinkId) — звук идёт в устройство по умолчанию', 'info');
-      void play();
-    }
-  } else void play();
-  setTimeout(() => void ctx.close(), 1500);
+      else{toast('Браузер не поддерживает выбор устройства вывода (setSinkId) — звук идёт в устройство по умолчанию','info');void play();}
+    }else void play();
+    timer=setTimeout(stop,1500);
+    return stop;
+  }catch(error){stop();throw error;}
 }
 
 export function VoiceSection() {
@@ -106,6 +108,7 @@ export function VoiceSection() {
   const [testing, setTesting] = useState(false);
   const [level, setLevel] = useState({ db: -100, thr: s.vadThresholdDb });
   const test = useRef<MicTest | null>(null);
+  const speakerTest=useRef<(()=>void)|null>(null);
   const [camOn, setCamOn] = useState(false);
   const videoRef = useRef<HTMLVideoElement>(null);
   const [loopback, setLoopback] = useState(true);
@@ -119,6 +122,7 @@ export function VoiceSection() {
     return () => {
       off();
       test.current?.stop();
+      speakerTest.current?.();speakerTest.current=null;
     };
   }, []);
 
@@ -127,9 +131,11 @@ export function VoiceSection() {
     if (!testing) return;
     let cancelled = false;
     let t: MicTest | null = null;
+    const controller = new AbortController();
     let last = 0;
     startMicTest({
       loopback,
+      signal: controller.signal,
       onLevel: (db, thr) => {
         const now = performance.now();
         if (now - last > 50) {
@@ -143,12 +149,14 @@ export function VoiceSection() {
         else t = test.current = mt;
       },
       (err) => {
+        if (cancelled) return;
         toast(mediaErrorMessage(err, 'mic'), 'error');
         setTesting(false);
       },
     );
     return () => {
       cancelled = true;
+      controller.abort();
       t?.stop();
       test.current = null;
     };
@@ -157,18 +165,21 @@ export function VoiceSection() {
   useEffect(() => {
     if (!camOn) return;
     let stream: MediaStream | null = null;
+    let cancelled = false;
     navigator.mediaDevices
       .getUserMedia({ video: s.videoDeviceId !== 'default' ? { deviceId: { exact: s.videoDeviceId } } : true })
       .then((st) => {
+        if (cancelled) { st.getTracks().forEach(t => t.stop()); return; }
         stream = st;
         if (videoRef.current) videoRef.current.srcObject = st;
         void listDevices().then(setDevices);
       })
       .catch((err) => {
+        if (cancelled) return;
         toast(mediaErrorMessage(err, 'camera'), 'error');
         setCamOn(false);
       });
-    return () => stream?.getTracks().forEach((t) => t.stop());
+    return () => { cancelled = true; stream?.getTracks().forEach((t) => t.stop()); };
   }, [camOn, s.videoDeviceId]);
 
   return (
@@ -201,7 +212,7 @@ export function VoiceSection() {
             <Switch checked={loopback} onChange={setLoopback} label="Слышать себя" /> Слышать себя
           </label>
           <span className="grow" />
-          <button className="btn btn-secondary" onClick={() => playTestSound(s.outputDeviceId)}>
+          <button className="btn btn-secondary" onClick={() => {speakerTest.current?.();speakerTest.current=null;try{speakerTest.current=playTestSound(s.outputDeviceId);}catch{toast('Не удалось проверить динамики','error');}}}>
             Проверить динамики
           </button>
         </div>

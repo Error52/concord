@@ -16,12 +16,13 @@ node scripts/dev.mjs up
 
 Для локальной сети: `node scripts/dev.mjs lan <IP-вашего-компьютера>`. Для микрофона и демонстрации на других устройствах нужно доверить LAN-сертификату; см. [LAN.md](docs/LAN.md).
 
-Демо: `alice@concord.local` / `demo12345`, также `bob`, `carol`, `dave`. Для новых аккаунтов есть подтверждение почты; в LAN-демо письмо открывается в собственном аккаунте. Для настоящей отправки настроить SMTP и выключить `DEMO_MAILBOX`.
+Демо: `alice@concord.local` / `demo12345`, также `bob`, `carol`, `dave`. Для закрытой беты доступен [режим секретного слова](docs/ACCOUNT-RECOVERY.md) без почтового сервиса. В режиме `email` для новых аккаунтов нужно подтверждение почты; в LAN-демо письмо открывается в собственном аккаунте. Для настоящих писем настройте SMTP и выключите `DEMO_MAILBOX`.
 
 ## Разработка и передача
 
 - [Быстрый запуск и тесты](QUICKSTART.md)
 - [Регистрация, почта и сессии](docs/REGISTRATION.md)
+- [Регистрация и восстановление по секретному слову](docs/ACCOUNT-RECOVERY.md)
 - [LAN и сертификаты](docs/LAN.md)
 - [Последние исправления и проверка регрессий](docs/VERIFICATION-REGRESSION-2026-10-17.md)
 - [Обновление, SMTP, PostgreSQL и тайм-ауты npm](docs/UPGRADING.md)
@@ -261,7 +262,7 @@ sudo ./scripts/install-server.sh chat.example.com you@example.com
 
 - Откройте `https://chat.example.com`, зарегистрируйтесь и подтвердите почту, создайте сервер, отправьте друзьям ссылку-приглашение (`/invite/…`). Для админки платформы выполните на сервере `make admin EMAIL=ваш-адрес` — регистрация сама её не выдаёт.
 - Демо-данные на сервере не создаются (`SEED_ON_START=0`).
-- До первого запуска настройте письма регистрации и сброса пароля: заполните `SMTP_HOST/PORT/USER/PASSWORD`, `MAIL_FROM` и `SMTP_TLS` либо `SMTP_STARTTLS` в `.env`, затем повторите установщик. Публичный режим требует рабочую почту.
+- До первого запуска выберите регистрацию: для закрытой беты установите `ACCOUNT_VERIFICATION_MODE=secret-word` и `DEMO_MAILBOX=false`; для режима `email` заполните `SMTP_HOST/PORT/USER/PASSWORD`, `MAIL_FROM` и `SMTP_TLS` либо `SMTP_STARTTLS` в `.env`. Затем повторите установщик. Подробности — [восстановление аккаунта](docs/ACCOUNT-RECOVERY.md).
 - GIF: получите бесплатный ключ GIPHY или Tenor → `GIF_API_KEY` в `.env`.
 - Обслуживание: `make logs`, `make backup` (дамп базы в `./backups`), `make restart` после изменений, обновление — заменить файлы проекта и `make restart` (миграции применяются сами).
 

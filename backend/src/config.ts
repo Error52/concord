@@ -20,6 +20,7 @@ const schema = z.object({
   REFRESH_TOKEN_TTL_DAYS: z.coerce.number().int().default(30),
   COOKIE_SECURE: bool,
   REQUIRE_EMAIL_VERIFICATION: z.enum(['true', 'false', '1', '0']).default('true').transform((v) => v === 'true' || v === '1'),
+  ACCOUNT_VERIFICATION_MODE: z.enum(['email','secret-word']).default('email'),
   // Explicit demo-only mode: own verification letter is visible after password authentication.
   // Keep off when validating real email ownership through SMTP.
   DEMO_MAILBOX: bool,
@@ -43,7 +44,7 @@ const schema = z.object({
   LIVEKIT_API_KEY: z.string().default('devkey'),
   LIVEKIT_API_SECRET: z.string().default('devsecret_change_me_devsecret_change_me'),
 
-  GIF_PROVIDER: z.enum(['giphy', 'tenor', 'none']).default('giphy'),
+  GIF_PROVIDER: z.enum(['giphy', 'tenor', 'local', 'none']).default('giphy'),
   GIF_API_KEY: z.string().optional(),
 
   SMTP_HOST: z.string().optional(),
@@ -79,6 +80,7 @@ export const platformAdminEmails = config.PLATFORM_ADMIN_EMAILS.split(',').map((
 
 /** Fail before accepting registrations when public verification cannot deliver mail. */
 export function validateMailConfiguration(): void {
+  if(config.ACCOUNT_VERIFICATION_MODE==='secret-word')return;
   if (config.SMTP_USER && !config.SMTP_TLS && !config.SMTP_STARTTLS) throw new Error('SMTP authentication requires SMTP_TLS=true or SMTP_STARTTLS=true');
   if (config.NODE_ENV==='production' && config.REQUIRE_EMAIL_VERIFICATION && !config.DEMO_MAILBOX &&
     (!config.SMTP_HOST || (config.SMTP_HOST==='mailpit' && !['localhost','127.0.0.1'].includes(new URL(config.APP_URL).hostname)))) {

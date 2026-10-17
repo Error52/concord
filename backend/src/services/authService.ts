@@ -13,11 +13,116 @@ import { control } from '../websocket/bus.js';
 import { queueMail } from './mailOutbox.js';
 import { log } from '../logger.js';
 import type { SelfUser, ProfileTheme } from '../models/dto.js';
+import {accountReady,normalizeRecoveryWord} from '../auth/accountReadiness.js';
+import {rateLimit} from '../middleware/rateLimit.js';
 
 const sha256 = (s: string): string => createHash('sha256').update(s).digest('hex');
 /** Refresh reuse within this window is treated as a benign race between tabs, not theft. */
 const ROTATION_GRACE_MS = 10_000;
 const UUID_PATTERN=/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+function requireEmailMode():void{if(config.ACCOUNT_VERIFICATION_MODE!=='email')throw Errors.notFound('Подтверждение по почте');}
+function requireWordMode():void{if(config.ACCOUNT_VERIFICATION_MODE!=='secret-word')throw Errors.notFound('Восстановление по ключевому слову');}
+function validatedRecoveryWord(word:string|undefined,password:string):string{
+  const normalized=normalizeRecoveryWord(word??'');
+  if(normalized.length<12||normalized.length>256)throw new AppError(400,'RECOVERY_WORD_INVALID','Ключевое слово или фраза — от 12 до 256 символов');
+  if(normalized===normalizeRecoveryWord(password))throw new AppError(400,'RECOVERY_WORD_EQUALS_PASSWORD','Ключевое слово должно отличаться от пароля');
+  return normalized;
+}
+const recoveryFailure=()=>new AppError(400,'RECOVERY_INVALID','Не удалось восстановить доступ. Проверьте имя, ключевое слово и код 2FA, если он настроен');
+async function requireRecoveryTotp(row:users.UserRow,code:string|undefined,generic:boolean,consume=true):Promise<void>{
+  if(!row.totp_enabled)return;
+  if(!row.totp_secret||!code||!/^\d{6}$/.test(code)||!verifyTotp(row.totp_secret,code))
+    throw generic?recoveryFailure():new AppError(400,'INVALID_CODE','Нужен действующий код двухфакторной аутентификации');
+  const replayed=consume?await redis.set(`totp-used:${row.id}:${code}`,'1','EX',90,'NX')!=='OK':!!await redis.exists(`totp-used:${row.id}:${code}`);
+  if(replayed)
+    throw generic?recoveryFailure():new AppError(400,'INVALID_CODE','Код уже использован. Дождитесь следующего кода');
+}
+function sameRecoverySnapshot(row:users.UserRow,before:users.UserRow):boolean{
+  return row.password_hash===before.password_hash&&row.recovery_word_hash===before.recovery_word_hash&&
+    row.totp_enabled===before.totp_enabled&&row.totp_secret===before.totp_secret&&!row.is_platform_admin;
+}
+async function invalidateRecoveryMail(userId:string,db:Queryable):Promise<void>{
+  await execute(`UPDATE password_resets SET used_at=now() WHERE user_id=$1 AND used_at IS NULL`,[userId],db);
+  await execute(`UPDATE email_verifications SET used_at=now() WHERE user_id=$1 AND used_at IS NULL`,[userId],db);
+  await execute(`UPDATE outbound_emails SET text_body='',html_body='' WHERE user_id=$1 AND purpose IN ('verification','password-reset')`,[userId],db);
+}
+export interface RecoveryWordReset {identifier:string;recoveryWord:string;newPassword:string;newRecoveryWord:string;totpCode?:string}
+export async function resetByRecoveryWord(input:RecoveryWordReset):Promise<void>{
+  requireWordMode();
+  const before=await users.findByIdentifier(input.identifier);
+  await rateLimit({name:'recovery-word-account',max:5,windowSec:900},sha256(before?.id??input.identifier.trim().toLowerCase()));
+  const old=normalizeRecoveryWord(input.recoveryWord);
+  const matches=await verifyPassword(old,before?.recovery_word_hash??await getDummyHash());
+  if(!before||!matches||!before.recovery_word_hash||before.is_platform_admin)throw recoveryFailure();
+  // Do not reveal policy-specific information until every existing recovery
+  // factor was checked. The transaction repeats this and claims the TOTP once.
+  await requireRecoveryTotp(before,input.totpCode,true,false);
+  if(await verifyPassword(input.newPassword,before.password_hash))throw new AppError(400,'PASSWORD_REUSED','При восстановлении задайте новый пароль');
+  const next=validatedRecoveryWord(input.newRecoveryWord,input.newPassword);
+  if(next===old)throw new AppError(400,'RECOVERY_WORD_REUSED','При восстановлении задайте новое ключевое слово');
+  const [passwordHash,wordHash]=await Promise.all([hashPassword(input.newPassword),hashPassword(next)]);
+  const ids=await tx(async db=>{
+    await lockUserSessions(before.id,db);await queryOne(`SELECT id FROM users WHERE id=$1 FOR UPDATE`,[before.id],db);
+    const row=await users.findById(before.id,db);
+    if(!row||!sameRecoverySnapshot(row,before))throw recoveryFailure();
+    await requireRecoveryTotp(row,input.totpCode,true);
+    await execute(`UPDATE users SET password_hash=$2,recovery_word_hash=$3,local_verified_at=coalesce(local_verified_at,now()),updated_at=now() WHERE id=$1`,[row.id,passwordHash,wordHash],db);
+    await invalidateRecoveryMail(row.id,db);
+    const sessions=await query<{id:string}>(`UPDATE sessions SET revoked_at=coalesce(revoked_at,now()) WHERE user_id=$1 RETURNING id`,[row.id],db);
+    return sessions.map(s=>s.id);
+  });
+  await revokeSessions(ids);
+}
+export interface RecoveryWordSetup {currentPassword:string;recoveryWord:string;oldRecoveryWord?:string;totpCode?:string}
+export async function setRecoveryWord(userId:string,sessionId:string,input:RecoveryWordSetup):Promise<void>{
+  requireWordMode();
+  const before=await users.findById(userId);
+  if(!before||before.is_platform_admin)throw new AppError(403,'RECOVERY_UNAVAILABLE','Для администратора восстановление выполняется оператором сервера');
+  if(!await verifyPassword(input.currentPassword,before.password_hash))throw new AppError(400,'INVALID_PASSWORD','Текущий пароль неверен');
+  if(before.recovery_word_hash&&!await verifyPassword(normalizeRecoveryWord(input.oldRecoveryWord??''),before.recovery_word_hash))
+    throw new AppError(400,'RECOVERY_WORD_INVALID','Укажите прежнее ключевое слово');
+  const word=validatedRecoveryWord(input.recoveryWord,input.currentPassword);
+  if(before.recovery_word_hash&&normalizeRecoveryWord(input.oldRecoveryWord??'')===word)throw new AppError(400,'RECOVERY_WORD_REUSED','Новое ключевое слово должно отличаться от прежнего');
+  const wordHash=await hashPassword(word);
+  const ids=await tx(async db=>{
+    await lockUserSessions(userId,db);await queryOne(`SELECT id FROM users WHERE id=$1 FOR UPDATE`,[userId],db);
+    const row=await users.findById(userId,db);
+    if(!row||!sameRecoverySnapshot(row,before))throw new AppError(409,'RECOVERY_CHANGED','Настройки доступа изменились. Войдите заново');
+    const current=await queryOne<{family_id:string}>(`SELECT s.family_id FROM sessions s WHERE s.id=$1 AND s.user_id=$2 AND EXISTS
+      (SELECT 1 FROM sessions active WHERE active.family_id=s.family_id AND active.revoked_at IS NULL AND active.expires_at>now())`,[sessionId,userId],db);
+    if(!current)throw new AppError(401,'SESSION_EXPIRED','Сессия истекла');
+    await requireRecoveryTotp(row,input.totpCode,false);
+    await execute(`UPDATE users SET recovery_word_hash=$2,local_verified_at=coalesce(local_verified_at,now()),updated_at=now() WHERE id=$1`,[userId,wordHash],db);
+    await invalidateRecoveryMail(userId,db);
+    const sessions=await query<{id:string}>(`UPDATE sessions SET revoked_at=coalesce(revoked_at,now()) WHERE user_id=$1 AND family_id<>$2 RETURNING id`,[userId,current.family_id],db);
+    return sessions.map(s=>s.id);
+  });
+  await revokeSessions(ids);
+}
+
+/** Local operator only: never exposed as an HTTP route and never grants or removes a role. */
+export async function operatorResetPassword(input:{identifier:string;newPassword:string}):Promise<{userId:string;username:string;isPlatformAdmin:boolean;revokedSessions:number}>{
+  if(input.newPassword.length<8||input.newPassword.length>128)throw Errors.badRequest('Новый пароль — от 8 до 128 символов');
+  const before=await users.findByIdentifier(input.identifier);
+  if(!before)throw Errors.notFound('Пользователь');
+  const passwordHash=await hashPassword(input.newPassword);
+  const result=await tx(async db=>{
+    await lockUserSessions(before.id,db);await queryOne(`SELECT id FROM users WHERE id=$1 FOR UPDATE`,[before.id],db);
+    const row=await users.findById(before.id,db);
+    if(!row||row.password_hash!==before.password_hash||row.recovery_word_hash!==before.recovery_word_hash||row.is_platform_admin!==before.is_platform_admin||row.totp_enabled!==before.totp_enabled||row.totp_secret!==before.totp_secret)
+      throw new AppError(409,'OPERATOR_RECOVERY_CHANGED','Настройки аккаунта изменились. Повторите операцию с актуальными данными');
+    await execute(`UPDATE users SET password_hash=$2,recovery_word_hash=NULL,updated_at=now() WHERE id=$1`,[row.id,passwordHash],db);
+    await invalidateRecoveryMail(row.id,db);
+    const sessions=await query<{id:string}>(`UPDATE sessions SET revoked_at=coalesce(revoked_at,now()) WHERE user_id=$1 RETURNING id`,[row.id],db);
+    await execute(`INSERT INTO platform_audit_log(actor_id,action,target_type,target_id,meta) VALUES(NULL,'account.operator_recovery','user',$1,$2)`,
+      [row.id,JSON.stringify({source:'local-cli',recoveryWordCleared:true,totpPreserved:row.totp_enabled})],db);
+    return {userId:row.id,username:row.username,isPlatformAdmin:row.is_platform_admin,ids:sessions.map(s=>s.id)};
+  });
+  await revokeSessions(result.ids);
+  await redis.del(`totp-setup:${result.userId}`);
+  return {userId:result.userId,username:result.username,isPlatformAdmin:result.isPlatformAdmin,revokedSessions:result.ids.length};
+}
 
 export interface SessionTokens {
   accessToken: string;
@@ -32,8 +137,8 @@ export interface ClientInfo {
 }
 
 async function issueAccess(userId: string, sessionId: string, db?: Queryable): Promise<string> {
-  const row = await queryOne<{verified:boolean}>(`SELECT email_verified_at IS NOT NULL AS verified FROM users WHERE id=$1`, [userId], db);
-  return signJwt({ sub: userId, sid: sessionId, typ: 'access', ev: row?.verified ?? false }, config.JWT_SECRET, config.ACCESS_TOKEN_TTL_SEC);
+  const row = await queryOne<{email_verified_at:Date|null;local_verified_at:Date|null;is_platform_admin:boolean}>(`SELECT email_verified_at,local_verified_at,is_platform_admin FROM users WHERE id=$1`, [userId], db);
+  return signJwt({ sub: userId, sid: sessionId, typ: 'access', ev: row?accountReady(row):false }, config.JWT_SECRET, config.ACCESS_TOKEN_TTL_SEC);
 }
 
 interface LoginSnapshot { passwordHash:string; totpSecret:string|null; totpEnabled:boolean }
@@ -75,6 +180,7 @@ export interface RegisterInput {
   username: string;
   email: string;
   password: string;
+  recoveryWord?:string;
   displayName?: string;
   bannerColor?: string;
   accentColor?: string;
@@ -82,18 +188,21 @@ export interface RegisterInput {
 }
 
 export async function register(input: RegisterInput, client: ClientInfo, verifiedSeed = false): Promise<{ user: SelfUser; tokens: SessionTokens }> {
+  const wordMode=config.ACCOUNT_VERIFICATION_MODE==='secret-word';
+  const word=wordMode&&!verifiedSeed?validatedRecoveryWord(input.recoveryWord,input.password):null;
   if (await users.findByEmail(input.email)) throw Errors.conflict('EMAIL_TAKEN', 'Этот email уже зарегистрирован');
   if (await users.findByUsername(input.username)) throw Errors.conflict('USERNAME_TAKEN', 'Это имя пользователя уже занято');
   const passwordHash = await hashPassword(input.password);
+  const wordHash=word?await hashPassword(word):null;
 
   const { userId, tokens } = await tx(async (db) => {
     // Serialize the first-admin decision across concurrent registrations.
     await queryOne(`SELECT pg_advisory_xact_lock(727275)`, [], db);
     const u = await queryOne<{ id: string }>(
       // Bootstrap is opt-in in production; public registration must not race the operator for admin.
-      `INSERT INTO users (email, username, display_name, password_hash, is_platform_admin, email_verified_at)
-       VALUES ($1, $2, $3, $4, $5 AND NOT EXISTS (SELECT 1 FROM users), CASE WHEN $6 THEN now() END) RETURNING id`,
-      [input.email.trim().toLowerCase(), input.username.trim(), input.displayName?.trim() || null, passwordHash, config.BOOTSTRAP_FIRST_ADMIN, verifiedSeed],
+      `INSERT INTO users (email, username, display_name, password_hash, is_platform_admin, email_verified_at,recovery_word_hash,local_verified_at)
+       VALUES ($1, $2, $3, $4, $5 AND NOT EXISTS (SELECT 1 FROM users), CASE WHEN $6 THEN now() END,$7,CASE WHEN $7::text IS NOT NULL THEN now() END) RETURNING id`,
+      [input.email.trim().toLowerCase(), input.username.trim(), input.displayName?.trim() || null, passwordHash, config.BOOTSTRAP_FIRST_ADMIN, verifiedSeed,wordHash],
       db,
     );
     await execute(
@@ -101,7 +210,7 @@ export async function register(input: RegisterInput, client: ClientInfo, verifie
       [u!.id, input.bannerColor ?? null, input.accentColor ?? null, input.theme ? JSON.stringify(input.theme) : null],
       db,
     );
-    if (!verifiedSeed) await queueEmailVerification(u!.id, input.email.trim().toLowerCase(), db);
+    if (!verifiedSeed&&!wordMode) await queueEmailVerification(u!.id, input.email.trim().toLowerCase(), db);
     return { userId: u!.id, tokens: await createSession(u!.id, client, undefined, db) };
   });
   const row = await users.findById(userId);
@@ -111,7 +220,7 @@ export async function register(input: RegisterInput, client: ClientInfo, verifie
 export type LoginResult = { kind: 'ok'; user: SelfUser; tokens: SessionTokens } | { kind: 'mfa'; ticket: string };
 
 export async function login(email: string, password: string, client: ClientInfo): Promise<LoginResult> {
-  const row = await users.findByEmail(email);
+  const row = await users.findByIdentifier(email);
   // Always run the KDF so response time does not leak account existence.
   const ok = await verifyPassword(password, row?.password_hash ?? (await getDummyHash()));
   if (!row || !ok) throw new AppError(401, 'INVALID_CREDENTIALS', 'Неверный email или пароль');
@@ -236,11 +345,13 @@ export async function revokeSession(userId: string, sessionId: string): Promise<
 export async function changePassword(userId: string, sessionId: string, current: string, next: string): Promise<void> {
   const row = await users.findById(userId);
   if (!row || !(await verifyPassword(current, row.password_hash))) throw new AppError(400, 'INVALID_PASSWORD', 'Текущий пароль неверен');
+  if(row.recovery_word_hash&&await verifyPassword(normalizeRecoveryWord(next),row.recovery_word_hash))
+    throw new AppError(400,'RECOVERY_WORD_EQUALS_PASSWORD','Новый пароль должен отличаться от ключевого слова');
   const passwordHash=await hashPassword(next);
   const ids=await tx(async(db)=>{
     await lockUserSessions(userId,db);
     const latest=await users.findById(userId,db);
-    if(!latest || latest.password_hash!==row.password_hash)throw new AppError(409,'PASSWORD_CHANGED','Пароль уже изменён. Войдите заново.');
+    if(!latest || latest.password_hash!==row.password_hash||latest.recovery_word_hash!==row.recovery_word_hash)throw new AppError(409,'PASSWORD_CHANGED','Настройки доступа уже изменены. Войдите заново.');
     const currentSession=await queryOne<{family_id:string}>(`SELECT s.family_id FROM sessions s WHERE s.id=$1 AND s.user_id=$2
       AND EXISTS (SELECT 1 FROM sessions active WHERE active.family_id=s.family_id AND active.revoked_at IS NULL AND active.expires_at>now())`,[sessionId,userId],db);
     if(!currentSession)throw new AppError(401,'SESSION_EXPIRED','Сессия истекла');
@@ -253,6 +364,7 @@ export async function changePassword(userId: string, sessionId: string, current:
 }
 
 export async function requestPasswordReset(email: string): Promise<void> {
+  requireEmailMode();
   const row = await users.findByEmail(email);
   if (!row) return; // do not reveal whether the account exists
   const token = randomBytes(32).toString('base64url');
@@ -274,6 +386,7 @@ export async function requestPasswordReset(email: string): Promise<void> {
 }
 
 export async function confirmPasswordReset(token: string, password: string): Promise<void> {
+  requireEmailMode();
   const passwordHash = await hashPassword(password);
   const userId = await tx(async (db) => {
     const owner=await queryOne<{user_id:string}>(`SELECT user_id FROM password_resets WHERE token_hash=$1`,[sha256(token)],db);
@@ -300,6 +413,7 @@ async function queueEmailVerification(userId:string,email:string,db:Queryable):P
 }
 
 export async function resendEmailVerification(userId:string):Promise<void> {
+  requireEmailMode();
   await tx(async(db)=>{
     const row=await queryOne<{email:string;email_verified_at:Date|null}>(`SELECT email,email_verified_at FROM users WHERE id=$1 FOR UPDATE`,[userId],db);
     if(!row)throw Errors.notFound('Пользователь');
@@ -312,6 +426,7 @@ export async function resendEmailVerification(userId:string):Promise<void> {
 }
 
 export async function confirmEmail(token:string):Promise<{userId:string}> {
+  requireEmailMode();
   return tx(async(db)=>{
     // Resend locks users before verification rows. Confirmation must use the same order.
     const candidate=await queryOne<{user_id:string}>(`SELECT user_id FROM email_verifications WHERE token_hash=$1`,[sha256(token)],db);
@@ -338,7 +453,7 @@ export async function beginTotpSetup(userId: string): Promise<{ secret: string; 
     await lockUserSessions(userId,db);
     const row = await users.findById(userId,db);
     if (!row) throw Errors.notFound('Пользователь');
-    if(config.REQUIRE_EMAIL_VERIFICATION && !row.email_verified_at)
+    if(!accountReady(row))
       throw new AppError(403,'EMAIL_UNVERIFIED','Подтвердите почту, чтобы настроить двухфакторный вход');
     if (row.totp_enabled) throw Errors.conflict('TOTP_ENABLED', 'Двухфакторная аутентификация уже включена');
     const secret = generateTotpSecret();
@@ -353,7 +468,7 @@ export async function enableTotp(userId: string, code: string): Promise<void> {
     await lockUserSessions(userId,db);
     const row=await users.findById(userId,db);
     if(!row)throw Errors.notFound('Пользователь');
-    if(config.REQUIRE_EMAIL_VERIFICATION && !row.email_verified_at)
+    if(!accountReady(row))
       throw new AppError(403,'EMAIL_UNVERIFIED','Подтвердите почту, чтобы настроить двухфакторный вход');
     if(row.totp_enabled)throw Errors.conflict('TOTP_ENABLED','Двухфакторная аутентификация уже включена');
     const raw = await redis.get(`totp-setup:${userId}`);

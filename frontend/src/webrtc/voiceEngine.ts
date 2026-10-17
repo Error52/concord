@@ -21,6 +21,7 @@ import { toast } from '../state/ui';
 import { gateway } from '../state/actions';
 import { getState } from '../state/app';
 import { createMeter, ensureMeterWorklet, VoiceActivityDetector } from './audioMeter';
+import { startMicrophoneTest } from './micTest';
 import { mediaErrorMessage } from './devices';
 import { StatsSampler, type ConnectionStats } from './stats';
 import { joinSound, leaveSound, muteSound, unmuteSound } from '../utils/notify';
@@ -1148,51 +1149,7 @@ function resolveUrl(url: string): string {
 export const voice = new VoiceEngine();
 
 // Microphone test (settings page): same pipeline as a call, but played back locally and never sent.
-export interface MicTest {
-  stop(): void;
-}
-
-export async function startMicTest(opts: { loopback: boolean; onLevel: (db: number, thr: number) => void }): Promise<MicTest> {
-  const s = settingsStore.get();
-  const ctx = new AudioContext({ latencyHint: 'interactive' });
-  const stream = await navigator.mediaDevices.getUserMedia({
-    audio: {
-      deviceId: s.inputDeviceId !== 'default' ? { exact: s.inputDeviceId } : undefined,
-      echoCancellation: s.echoCancellation,
-      noiseSuppression: s.noiseSuppression,
-      autoGainControl: s.autoGainControl,
-    },
-  });
-  const src = ctx.createMediaStreamSource(stream);
-  const gain = ctx.createGain();
-  gain.gain.value = s.inputVolume;
-  src.connect(gain);
-  const vad = new VoiceActivityDetector(s.vadThresholdDb, s.vadAuto);
-  const stopMeter = await createMeter(ctx, gain, ({ rmsDb }) => {
-    const st = settingsStore.get();
-    vad.thresholdDb = st.vadThresholdDb;
-    vad.auto = st.vadAuto;
-    vad.update(rmsDb);
-    opts.onLevel(rmsDb, vad.effectiveThreshold);
-  });
-  let audioEl: HTMLAudioElement | null = null;
-  if (opts.loopback) {
-    // Played through an <audio> element so the selected output device (setSinkId) is honoured.
-    const out = ctx.createMediaStreamDestination();
-    gain.connect(out);
-    audioEl = new Audio();
-    audioEl.srcObject = out.stream;
-    if (s.outputDeviceId !== 'default' && 'setSinkId' in audioEl) {
-      await (audioEl as HTMLAudioElement & { setSinkId(id: string): Promise<void> }).setSinkId(s.outputDeviceId).catch(() => undefined);
-    }
-    await audioEl.play().catch(() => undefined);
-  }
-  return {
-    stop() {
-      stopMeter();
-      audioEl?.pause();
-      stream.getTracks().forEach((t) => t.stop());
-      void ctx.close();
-    },
-  };
+export type { MicTest } from './micTest';
+export function startMicTest(opts: { loopback: boolean; onLevel: (db: number, thr: number) => void; signal?: AbortSignal }) {
+  return startMicrophoneTest(() => settingsStore.get(), opts);
 }

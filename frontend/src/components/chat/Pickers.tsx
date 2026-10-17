@@ -7,6 +7,7 @@ import { settingsStore } from '../../state/settings';
 import { useClampedPosition } from '../ui/Overlays';
 
 const locale = (): string => (settingsStore.get().language === 'en' ? 'en_US' : 'ru_RU');
+const TRENDING=Symbol('trending');
 
 interface GifPage {
   items: Gif[];
@@ -98,14 +99,14 @@ function GifPanel({ onPick }: { onPick: (g: Gif) => void }) {
     return () => clearTimeout(t);
   }, [q]);
 
-  const load = async (search: string | null | 'trending', pos: string | null) => {
+  const load = async (search: string | null | typeof TRENDING, pos: string | null) => {
     if(pos&&loadingRef.current)return;
     const generation=pos?requestGeneration.current:++requestGeneration.current;
     loadingRef.current=true;
     setLoading(true);
     try {
       const page = await api.get<GifPage>(
-        search === 'trending' ? `/gifs/trending?locale=${locale()}${pos ? `&pos=${pos}` : ''}` : `/gifs/search?locale=${locale()}&q=${encodeURIComponent(search ?? '')}${pos ? `&pos=${pos}` : ''}`,
+        search === TRENDING ? `/gifs/trending?locale=${locale()}${pos ? `&pos=${encodeURIComponent(pos)}` : ''}` : `/gifs/search?locale=${locale()}&q=${encodeURIComponent(search ?? '')}${pos ? `&pos=${encodeURIComponent(pos)}` : ''}`,
       );
       if(generation!==requestGeneration.current)return;
       setItems((cur) => pos?[...new Map([...cur,...page.items].map(g=>[g.id,g])).values()]:page.items);
@@ -140,13 +141,13 @@ function GifPanel({ onPick }: { onPick: (g: Gif) => void }) {
         className="picker-body scroll"
         onScroll={(e) => {
           const el = e.currentTarget;
-          if (next && !loading && el.scrollTop + el.clientHeight > el.scrollHeight - 300) void load(query ?? 'trending', next);
+          if (next && !loading && el.scrollTop + el.clientHeight > el.scrollHeight - 300) void load(query ?? TRENDING, next);
         }}
       >
         {error && <p className="field-error">{error}</p>}
         {showingCategories ? (
           <div className="gif-cats">
-            <button className="gif-cat" style={{ background: 'linear-gradient(135deg, var(--accent), #ec4899)' }} onClick={() => void load('trending', null)}>
+            <button className="gif-cat" style={{ background: 'linear-gradient(135deg, var(--accent), #ec4899)' }} onClick={() => void load(TRENDING, null)}>
               <span>🔥 Популярные</span>
             </button>
             {cats.map((c) => (

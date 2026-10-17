@@ -1,5 +1,6 @@
 import { query, queryOne, type Queryable, pool } from '../db/pool.js';
 import { config } from '../config.js';
+import {accountReady} from '../auth/accountReadiness.js';
 import { mediaUrl } from '../storage/index.js';
 import { getStatuses } from '../services/presenceService.js';
 import type { BadgeDTO, ChosenStatus, ProfileTheme, PublicUser, SelfUser } from '../models/dto.js';
@@ -8,6 +9,8 @@ export interface UserRow {
   id: string;
   email: string;
   email_verified_at: Date | null;
+  local_verified_at:Date|null;
+  recovery_word_hash:string|null;
   username: string;
   display_name: string | null;
   password_hash: string;
@@ -37,6 +40,11 @@ export async function findById(id: string, db: Queryable = pool): Promise<UserRo
 
 export async function findByEmail(email: string): Promise<UserRow | null> {
   return queryOne<UserRow>(`${SELECT_USER} WHERE lower(u.email) = lower($1)`, [email]);
+}
+
+export async function findByIdentifier(identifier:string):Promise<UserRow|null>{
+  const value=identifier.trim();
+  return value.includes('@')?findByEmail(value):findByUsername(value);
 }
 
 export async function findByUsername(username: string): Promise<UserRow | null> {
@@ -135,8 +143,12 @@ export async function toSelf(row: UserRow): Promise<SelfUser> {
     badges: badges.get(row.id) ?? [],
     email: row.email,
     emailVerified: row.email_verified_at !== null,
-    emailVerificationRequired: config.REQUIRE_EMAIL_VERIFICATION,
-    demoMailbox: config.DEMO_MAILBOX,
+    accountReady:accountReady(row),
+    hasRecoveryWord:!!row.recovery_word_hash,
+    recoveryWordAllowed:!row.is_platform_admin&&config.ACCOUNT_VERIFICATION_MODE==='secret-word',
+    verificationMode:config.ACCOUNT_VERIFICATION_MODE,
+    emailVerificationRequired: config.REQUIRE_EMAIL_VERIFICATION&&config.ACCOUNT_VERIFICATION_MODE==='email',
+    demoMailbox: config.DEMO_MAILBOX&&config.ACCOUNT_VERIFICATION_MODE==='email',
     chosenStatus: row.status,
     totpEnabled: row.totp_enabled,
     isPlatformAdmin: row.is_platform_admin,
